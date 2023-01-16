@@ -9,4 +9,3 @@ The R scripts contained within this repository will allow you to create elements
 - **05_12_16_data:** Script to prepare 2012-2016 ACS data.
 - **06_Subs_Hsg:** Script to prepare data on subsidized housing.
 - **07_Schools:** Script to prepare data on schools.
-- **08_Greenspace:** Script to prepare data on 
