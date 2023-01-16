@@ -1,6 +1,6 @@
 # Displacement Risk Index Readme
 
-The scripts contained within this repository will allow you to create elements of the Displacement Risk Index. Scripts are located in the "Scripts" subfolder.
+The scripts contained within this repository will allow you to create elements of the Displacement Risk Index:
 
 - **01_Master:** Master script that draws from scripts 2-7 to produce analysis for Atlanta based upon the BeltLine geography and city block groups.
 - **02_GEOS:** Script to prepare block group geographies.
