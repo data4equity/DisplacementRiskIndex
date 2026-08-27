@@ -1,0 +1,2440 @@
+---
+title: "DRI_Analyses"
+author: "Patrice C Williams & Andrew Greenlee"
+date: "5/16/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# dev = "tiff"
+```
+
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(tigris)
+library(sf)
+library(scales)
+library(patchwork)
+library(ggsn)
+library(sp)
+library(spdep)
+library(rgdal)
+library(tmap)
+library(CARBayesST)
+library(coda)
+library(GGally)
+library(Hmisc)
+library(xtable)
+library(numDeriv)
+library(data.table)
+library(bayesplot)
+```
+
+```{r functions, echo=FALSE, include=FALSE}
+# x is a matrix containing the data
+# method : correlation method. "pearson"" or "spearman"" is supported
+# removeTriangle : remove upper or lower triangle
+# results :  if "html" or "latex"
+  # the results will be displayed in html or latex format
+corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper", "lower"),
+                     result=c("none", "html", "latex")){
+    #Compute correlation matrix
+    require(Hmisc)
+    x <- as.matrix(x)
+    correlation_matrix<-rcorr(x, type=method[1])
+    R <- correlation_matrix$r # Matrix of correlation coefficients
+    p <- correlation_matrix$P # Matrix of p-value 
+    
+    ## Define notions for significance levels; spacing is important.
+    mystars <- ifelse(p < .0001, "****", ifelse(p < .001, "*** ", ifelse(p < .01, "**  ", ifelse(p < .05, "*   ", "    "))))
+    
+    ## truncate the correlation matrix to two decimal
+    R <- format(round(cbind(rep(-1.11, ncol(x)), R), 2))[,-1]
+    
+    ## build a new matrix that includes the correlations with their appropriate stars
+    Rnew <- matrix(paste(R, mystars, sep=""), ncol=ncol(x))
+    diag(Rnew) <- paste(diag(R), " ", sep="")
+    rownames(Rnew) <- colnames(x)
+    colnames(Rnew) <- paste(colnames(x), "", sep="")
+    
+    ## remove upper triangle of correlation matrix
+    if(removeTriangle[1]=="upper"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[upper.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+    
+    ## remove lower triangle of correlation matrix
+    else if(removeTriangle[1]=="lower"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[lower.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+    
+    ## remove last column and return the correlation matrix
+    Rnew <- cbind(Rnew[1:length(Rnew)-1])
+    if (result[1]=="none") return(Rnew)
+    else{
+      if(result[1]=="html") print(xtable(Rnew), type="html")
+      else print(xtable(Rnew), type="latex") 
+    }
+} 
+
+# Calculate Hessian Matrix
+sc2.f <- function(x){
+  n <- length(x)
+  sum((1:n) * (exp(x) - x)) / n
+}
+
+```
+
+
+# Load and Prepare Data
+
+```{r load data, echo=FALSE, include=FALSE}
+# Run this R script prior to working in R markdown: 01_Master_Datasets
+
+# Combining different year datasets into one
+dataset <- bind_rows(dataset_00, dataset_11, dataset_16)
+# Note .x variables are the z-scored and rescaled and .y are the original info prior to being standardized
+dataset <- left_join(dataset, dataset_0016g, by = c("GEOID" = "GEOID", "S_Year" = "S_Year"))
+# Creating a unique ID for each unique geoid; we are grouping geoids
+dataset_id <- dataset %>% 
+  group_by(GEOID) %>% 
+  dplyr::mutate(ID = cur_group_id())
+
+# Adding spatial data to attribute data
+dataset_id <- left_join(dataset_id, bg_limits, by = c("GEOID" = "GEOID")) %>% 
+  subset(select = -c(geometry.x, belt_flag.x)) 
+
+# Including in dataset whether projects have been completed or slated for greenspace projects
+# Year: 2000
+completed_2000 <- Parks_0711 %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_) %>% # needed to use dplyr because the select option wasn't being recognized 
+  mutate(Completed = 0,
+         Year = "2000",
+         Slated = Completed)
+completed_2000[is.na(completed_2000)] <- 0
+completed_2000 <- st_set_geometry(completed_2000, NULL)
+
+# Year: 2012-2016
+completed_1216r <- Parks_1219 %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_) 
+completed_1216r <- st_set_geometry(completed_1216r, NULL)
+completed_1216 <- completed_1216r %>%  
+  mutate(Completed = case_when(Year_ == "2012" ~ 1),
+         Slated = case_when(Year_ == "2012" ~ 0,
+                            Year_ %in% c("2017","2019") ~ 1),
+         Year = "2016")
+completed_1216[is.na(completed_1216)] <- 0
+
+# Year: 2017-2021
+completed_1721 <- completed_1216 %>% 
+  mutate(Year = ifelse(Year == "2016", "2021", "2021"),
+         Completed = ifelse(Slated == 1, 1,0),
+         Slated = ifelse(Slated == 1, 0,0))
+
+# Year: 2007-2011
+completed_0711 <- Parks_0711 %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_)
+completed_0711 <- st_set_geometry(completed_0711, NULL)
+completed_0711 <- left_join(completed_0711, completed_1216, by = c("GEOID" = "GEOID"))
+
+completed_0711 <- completed_0711 %>% 
+  mutate(Name.y = ifelse(GEOID == "131210062001", "West End Trail", Name.y),
+         Implementa.y = ifelse(GEOID == "131210062001", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210062001", "2008", Year_.y),
+         Name.y = ifelse(GEOID == "131210042002", "West End Trail", Name.y),
+         Implementa.y = ifelse(GEOID == "131210042002", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210042002", "2008", Year_.y),
+         Name.y = ifelse(GEOID == "131210041003", "West End Trail", Name.y),
+         Implementa.y = ifelse(GEOID == "131210041003", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210041003", "2008", Year_.y),
+         Name.y = ifelse(GEOID == "131210091011", "Northside Trail", Name.y),
+         Status.y = ifelse(GEOID == "131210091011", "Completed", Status.y),
+         Implementa.y = ifelse(GEOID == "131210091011", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210091011", "2010", Year_.y),
+         Name.y = ifelse(GEOID == "131210090003", "Northside Trail", Name.y),
+         Status.y = ifelse(GEOID == "131210090003", "Completed", Status.y),
+         Implementa.y = ifelse(GEOID == "131210090003", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210090003", "2010", Year_.y),
+         Name.y = ifelse(GEOID == "131210091012", "Northside Trail", Name.y),
+         Status.y = ifelse(GEOID == "131210091012", "Completed", Status.y),
+         Implementa.y = ifelse(GEOID == "131210091012", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210091012", "2010", Year_.y),
+         Name = Name.y,
+         Status = Status.y,
+         Implementa = Implementa.y,
+         Year_ = Year_.y) %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_)
+completed_0711 <- completed_0711 %>% 
+  mutate(Completed = case_when(Year_ %in% c("2008", "2010") ~ 1),
+         Year = "2011",
+         Slated = case_when(Year_ %in% c("2012", "2017", "2019") ~ 1))
+completed_0711[is.na(completed_0711)] <- 0
+
+# Combine the two datasets to create a master dataset
+dataset_green<-bind_rows(completed_2000, completed_0711, completed_1216, completed_1721) %>% 
+  distinct(GEOID, Year, .keep_all = TRUE)
+dataset_id <- left_join(dataset_id, dataset_green, by = c("GEOID" = "GEOID", "S_Year" = "Year"))
+dataset_id$Name <- ifelse(is.na(dataset_id$Name), 0, dataset_id$Name)
+dataset_id$Status <- ifelse(is.na(dataset_id$Status), 0, dataset_id$Status)
+dataset_id$Implementa <- ifelse(is.na(dataset_id$Implementa), 0, dataset_id$Implementa)
+dataset_id$Year_ <- ifelse(is.na(dataset_id$Year_), 0, dataset_id$Year_)
+dataset_id$Completed <- ifelse(is.na(dataset_id$Completed), 0, dataset_id$Completed)
+dataset_id$Slated <- ifelse(is.na(dataset_id$Slated), 0, dataset_id$Slated)
+
+dataset_id <- dataset_id %>% 
+  mutate(belt_flag = as.factor(case_when(belt_flag == "Not Beltline" ~ 0,
+                              belt_flag == "Beltline" ~ 1)))
+
+# Create a different dataset for BeltLine groups
+dataset_belt <- dataset_id %>%
+  filter(belt_flag.y=="Beltline")
+
+# Checking if there are any missing values
+any(is.na(dataset_id)) # There should be no missing values prior to moving forward
+any(is.na(dataset_belt))
+
+# Constructing binary variables for the different index categories - City of Atlanta
+m <- dataset_id %>% 
+  mutate(DR_High = as.factor(case_when(DR_Cat == "High Displacement Risk" ~ 1,
+                                       DR_Cat == "Moderate Displacement Risk" ~ 0,
+                                       DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Mod = as.factor(case_when(DR_Cat == "Moderate Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Low = as.factor(case_when(DR_Cat == "Low Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Moderate Displacement Risk" ~ 0)),
+         Vul_Low = as.factor(case_when(Vuln_Cat == "Low Vulnerability" ~ 1,
+                                       Vuln_Cat == "Moderate Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_Mod = as.factor(case_when(Vuln_Cat == "Moderate Vulnerability" ~ 1,
+                                       Vuln_Cat == "Low Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_High = as.factor(case_when(Vuln_Cat == "High Vulnerability" ~ 1,
+                                        Vuln_Cat == "Low Vulnerability" ~ 0,
+                                        Vuln_Cat == "Moderate Vulnerability"~ 0)),
+         HM_Low = as.factor(case_when(House_Cat == "Low Vulnerability" ~ 1,
+                                       House_Cat == "Moderate Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_Mod = as.factor(case_when(House_Cat == "Moderate Vulnerability" ~ 1,
+                                       House_Cat == "Low Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_High = as.factor(case_when(House_Cat == "High Vulnerability" ~ 1,
+                                        House_Cat == "Low Vulnerability" ~ 0,
+                                        House_Cat == "Moderate Vulnerability"~ 0)))
+m$DR_High = as.numeric(as.character(m$DR_High))
+m$DR_Mod = as.numeric(as.character(m$DR_Mod))
+m$DR_Low = as.numeric(as.character(m$DR_Low))
+m$Vul_Low = as.numeric(as.character(m$Vul_Low))
+m$Vul_Mod = as.numeric(as.character(m$Vul_Mod))
+m$Vul_High = as.numeric(as.character(m$Vul_High))
+m$HM_Low = as.numeric(as.character(m$HM_Low))
+m$HM_Mod = as.numeric(as.character(m$HM_Mod))
+m$HM_High = as.numeric(as.character(m$HM_High))
+
+# Constructing binary variables for the different index categories - BeltLine
+b <- dataset_belt %>% 
+  mutate(DR_High = as.factor(case_when(DR_Cat == "High Displacement Risk" ~ 1,
+                                       DR_Cat == "Moderate Displacement Risk" ~ 0,
+                                       DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Mod = as.factor(case_when(DR_Cat == "Moderate Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Low = as.factor(case_when(DR_Cat == "Low Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Moderate Displacement Risk" ~ 0)),
+         Vul_Low = as.factor(case_when(Vuln_Cat == "Low Vulnerability" ~ 1,
+                                       Vuln_Cat == "Moderate Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_Mod = as.factor(case_when(Vuln_Cat == "Moderate Vulnerability" ~ 1,
+                                       Vuln_Cat == "Low Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_High = as.factor(case_when(Vuln_Cat == "High Vulnerability" ~ 1,
+                                        Vuln_Cat == "Low Vulnerability" ~ 0,
+                                        Vuln_Cat == "Moderate Vulnerability"~ 0)),
+         HM_Low = as.factor(case_when(House_Cat == "Low Vulnerability" ~ 1,
+                                       House_Cat == "Moderate Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_Mod = as.factor(case_when(House_Cat == "Moderate Vulnerability" ~ 1,
+                                       House_Cat == "Low Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_High = as.factor(case_when(House_Cat == "High Vulnerability" ~ 1,
+                                        House_Cat == "Low Vulnerability" ~ 0,
+                                        House_Cat == "Moderate Vulnerability"~ 0)),
+         belt_flag = as.factor(case_when(belt_flag == "Not Beltline" ~ 0,
+                                         belt_flag == "Beltline" ~ 1)))
+b$DR_High = as.numeric(as.character(b$DR_High))
+b$DR_Mod = as.numeric(as.character(b$DR_Mod))
+b$DR_Low = as.numeric(as.character(b$DR_Low))
+b$Vul_Low = as.numeric(as.character(b$Vul_Low))
+b$Vul_Mod = as.numeric(as.character(b$Vul_Mod))
+b$Vul_High = as.numeric(as.character(b$Vul_High))
+b$HM_Low = as.numeric(as.character(b$HM_Low))
+b$HM_Mod = as.numeric(as.character(b$HM_Mod))
+b$HM_High = as.numeric(as.character(b$HM_High))
+
+bg_limits_belt <- bg_limits[!bg_limits$GEOID == "131219800001",] %>%
+  mutate(belt_flag = case_when(belt_flag== "Beltline" ~ "BeltLine",
+                               belt_flag== "Not Beltline" ~ "Not BeltLine"),
+         belt_flag = ifelse(GEOID=="131210036001", "Not BeltLine", belt_flag)) %>% 
+  dplyr::select(GEOID, belt_flag, geometry)
+```
+
+
+```{r exploratory,echo=FALSE, include=TRUE}
+
+# Examining the relationship between vulnerability indicators, vulnerability index, and DRI
+corstars(dataset_id[,c(2:11,16:20,32,70)], method = "spearman", removeTriangle= "upper", result = "none")
+
+# Examining the relationship between housing market indicators, housing market index, and DRI
+corstars(dataset_id[,c(12:15,23:25,28:31,33,70)], method = "spearman", removeTriangle= "upper", result = "none")
+
+# Examining the relationship between vulnerability index categories and completed vs. slated greenspace projects
+corstars(dataset_id[,c(35,79,80)], method = "spearman", removeTriangle = "upper", result = "none")
+corstars(dataset_belt[,c(35,79,80)], method = "spearman", removeTriangle = "upper", result = "none")
+ftable(xtabs(~ dataset_id$Vuln_Cat + dataset_id$Completed + dataset_id$Slated))
+
+# Examining the relationship between housing market index categories and completed vs. slated greenspace projects
+corstars(dataset_id[,c(36,79,80)], method = "spearman", removeTriangle = "upper", result = "none")
+corstars(dataset_belt[,c(36,79,80)], method = "spearman", removeTriangle = "upper", result = "none")
+ftable(xtabs(~ dataset_id$House_Cat + dataset_id$Completed + dataset_id$Slated))
+
+# Examining the relationship between displacement risk index categories and completed vs. slated greenspace projects
+corstars(dataset_id[,c(37,79,80)], method = "spearman", removeTriangle = "upper", result = "none")
+corstars(dataset_belt[,c(37,79,80)], method = "spearman", removeTriangle = "upper", result = "none")
+ftable(xtabs(~ dataset_id$DR_Cat + dataset_id$Completed + dataset_id$Slated))
+
+```
+
+
+# Testing for Spatial Autocorrelation
+
+```{r spatial autocorrelation, echo=FALSE}
+## Testing the presence of localized spatial autocorrelation (Moran's I statistic)
+# Defining neighboring polygons (queen = any continguous polygons that share at least one vertex; if need just edges to be shared between polygons then it would be queen = FALSE)
+# nb <- poly2nb(dataset_id$geometry, row.names = rownames(dataset_id$GEOID), queen = TRUE)
+# print(nb)
+# 
+# nbg <- poly2nb(dataset_belt$geometry, row.names = rownames(dataset_belt$GEOID), queen = TRUE)
+# print(nbg)
+# 
+# # Creating spatial weights (style = B: basic binary coding (more robust); W: row standardized (sums over all links to n), C: is globally standardized (sums all links to n);; U: C/number of neighbors (sums overall links to unity); S: variance-stabilizing coding scheme (sums over all links to n))
+# # zero policy - default is NULL, use global option value; if FALSE stop with error for any empty neighbor sets, if TRUE permits the weights list to be formed with zero-length weights vectors
+# nb.list <- nb2listw(nb, style = "B")
+# print(nb.list) 
+# 
+# nbg.list <- nb2listw(nbg, style = "B")
+# print(nbg.list)
+# 
+# # Computing spatial neighborhood matrix (W)
+# W <- nb2mat(nb, style = "B")
+# Wg <- nb2mat(nbg, style = "B")
+# 
+# # Compute Moran's I statistic:  moran.mc function test for significance using MC simulation method
+# # For this model none of the terms are significant
+# formula.Vul <- dataset_id$Index_Vuln ~ belt_flag + dataset_id$Completed + dataset_id$Slated
+# model1v <- glm(formula = formula.Vul, family = "gaussian", data = dataset_id)
+# resid.glm1v <- residuals(model1v)
+# summary(model1v)$coefficients
+# summary(model1v)$dispersion
+# moran.mc(x = resid.glm1v[1:951], listw = nb.list, nsim = 1000)
+# # The simulation suggests that our observed Moran's I value is not consistent with a Moran's I value one would expect
+# # to get if Vulnerability index values were not spatially autocorrelated; positive spatial autocorrelation (clustering).
+# 
+# # Plot the distribution using a density plot
+# plot(moran.mc(dataset_id$Index_Vuln, nb.list, nsim = 1000), main="", las=1)
+# 
+# # There is no difference between results of this model and the previous with the additional term
+# formula.Vulc <- dataset_id$Index_Vuln ~ dataset_id$belt_flag + dataset_id$Completed + dataset_id$Slated + dataset_id$Slated*dataset_id$Completed
+# model1vc <- glm(formula = formula.Vulc, family = "gaussian", data = dataset_id)
+# resid.glm1vc <- residuals(model1vc)
+# summary(model1vc)$coefficients
+# summary(model1vc)$dispersion
+# moran.mc(x = resid.glm1vc[1:951], listw = nb.list, nsim = 1000)
+# 
+# # For this model the completed term is significant (spatially autocorrelated)
+# formula.HM <- dataset_id$Index_Housing ~ belt_flag + dataset_id$Completed + dataset_id$Slated
+# model1hm <- glm(formula = formula.HM, family = "gaussian", data = dataset_id)
+# resid.glm1hm <- residuals(model1hm)
+# summary(model1hm)$coefficients
+# summary(model1hm)$dispersion
+# moran.mc(x = resid.glm1hm[1:951], listw = nb.list, nsim = 1000)
+# 
+# # There is no difference between results of this model and the previous with the additional term
+# formula.HMc <- dataset_id$Index_Housing ~ dataset_id$belt_flag + dataset_id$Completed + dataset_id$Slated + dataset_id$Slated*dataset_id$Completed
+# model1hmc <- glm(formula = formula.HMc, family = "gaussian", data = dataset_id)
+# resid.glm1hmc <- residuals(model1hmc)
+# summary(model1hmc)$coefficients
+# summary(model1hmc)$dispersion
+# moran.mc(x = resid.glm1hmc[1:951], listw = nb.list, nsim = 1000)
+# 
+# # For this model the completed term is significant (spatially autocorrelated)
+# formula.DRI <- dataset_id$Index_DR ~ dataset_id$belt_flag + dataset_id$Completed + dataset_id$Slated
+# model1dri <- glm(formula = formula.DRI, family = "gaussian", data = dataset_id)
+# resid.glm1dri <- residuals(model1dri)
+# summary(model1dri)$coefficients
+# summary(model1dri)$dispersion
+# moran.mc(x = resid.glm1dri[1:951], listw = nb.list, nsim = 1000)
+# 
+# # There is no difference between results of this model and the previous with the additional term
+# formula.DRIc <- dataset_id$Index_DR ~ dataset_id$belt_flag + dataset_id$Completed + dataset_id$Slated + dataset_id$Slated*dataset_id$Completed
+# model1dric <- glm(formula = formula.DRIc, family = "gaussian", data = dataset_id)
+# resid.glm1dric <- residuals(model1dric)
+# summary(model1dric)$coefficients
+# summary(model1dric)$dispersion
+# moran.mc(x = resid.glm1dric[1:951], listw = nb.list, nsim = 1000)
+# 
+# # For this model the completed term is significant (spatially autocorrelated)
+# formula.Vulg <- dataset_belt$Index_Vuln ~ dataset_belt$Completed + dataset_belt$Slated
+# model1vg <- glm(formula = formula.Vulg, family = "gaussian", data = dataset_belt)
+# resid.glm1vg <- residuals(model1vg)
+# summary(model1vg)$coefficients
+# summary(model1vg)$dispersion
+# moran.mc(x = resid.glm1vg[1:264], listw = nbg.list, nsim = 1000)
+# 
+# # There is no difference between results of this model and the previous with the additional term
+# formula.Vulgc <- dataset_belt$Index_Vuln ~ dataset_belt$Completed + dataset_belt$Slated + dataset_belt$Slated*dataset_belt$Completed 
+# model1vgc <- glm(formula = formula.Vulgc, family = "gaussian", data = dataset_belt)
+# resid.glm1vgc <- residuals(model1vgc)
+# summary(model1vgc)$coefficients
+# summary(model1vgc)$dispersion
+# moran.mc(x = resid.glm1vgc[1:264], listw = nbg.list, nsim = 1000)
+# 
+# # For this model the completed term is significant (spatially autocorrelated)
+# formula.HMg <- dataset_belt$Index_Housing ~ dataset_belt$Completed + dataset_belt$Slated
+# model1hmg <- glm(formula = formula.HMg, family = "gaussian", data = dataset_belt)
+# resid.glm1hmg <- residuals(model1hmg)
+# summary(model1hmg)$coefficients
+# summary(model1hmg)$dispersion
+# moran.mc(x = resid.glm1hmg[1:264], listw = nbg.list, nsim = 1000)
+# 
+# # There is no difference between results of this model and the previous with the additional term
+# formula.HMgc <- dataset_belt$Index_Housing ~ dataset_belt$Completed + dataset_belt$Slated + dataset_belt$Slated*dataset_belt$Completed
+# model1hmgc <- glm(formula = formula.HMgc, family = "gaussian", data = dataset_belt)
+# resid.glm1hmgc <- residuals(model1hmgc)
+# summary(model1hmgc)$coefficients
+# summary(model1hmgc)$dispersion
+# moran.mc(x = resid.glm1hmgc[1:264], listw = nbg.list, nsim = 1000)
+# 
+# # For this model the completed term is significant (spatially autocorrelated)
+# formula.DRIg <- dataset_belt$Index_DR ~ dataset_belt$Completed + dataset_belt$Slated
+# model1drig <- glm(formula = formula.DRIg, family = "gaussian", data = dataset_belt)
+# resid.glm1drig <- residuals(model1drig)
+# summary(model1drig)$coefficients
+# summary(model1drig)$dispersion
+# moran.mc(x = resid.glm1drig[1:264], listw = nbg.list, nsim = 1000)
+# 
+# # There is no difference between results of this model and the previous with the additional term
+# formula.DRIgc <- dataset_belt$Index_DR ~ dataset_belt$Completed + dataset_belt$Slated + dataset_belt$Slated*dataset_belt$Completed
+# model1drigc <- glm(formula = formula.DRIgc, family = "gaussian", data = dataset_belt)
+# resid.glm1drigc <- residuals(model1drigc)
+# summary(model1drigc)$coefficients
+# summary(model1drigc)$dispersion
+# moran.mc(x = resid.glm1drigc[1:264], listw = nbg.list, nsim = 1000)
+# 
+# # This model is focused on socially vulnerable populations
+# formula.DR <- dataset_id$Index_DR ~ dataset_id$belt_flag + dataset_id$P_Black.y + dataset_id$P_Hispanic.y + dataset_id$P_AIAN.y + dataset_id$P_ASIAN.y + dataset_id$P_NHPI.y + dataset_id$P_Elderly.y + dataset_id$P_HSorLess.y + dataset_id$P_Renter.y + dataset_id$P_Poverty.y + dataset_id$P_LEP.y + dataset_id$P_Single.y + dataset_id$P_RentCostBurden.y + dataset_id$P_Own_Cost_Burden.y + dataset_id$P_Severe_RentCostBurden.y + dataset_id$P_Severe_OwnCostBurden.y
+# model1dr <- glm(formula = formula.DR, family = "gaussian", data = dataset_id)
+# resid.glm1dr <- residuals(model1dr)
+# summary(model1dr)$coefficients
+# summary(model1dr)$dispersion
+# any(is.na(dataset_id$Index_DR))
+# moran.mc(x = resid.glm1dr[1:951], listw = nb.list, nsim = 1000)
+
+```
+# Preliminary Models
+```{r prelim analyses, echo=FALSE}
+# Vulnerability Index
+# According to the gelman.diag these models did not converge
+# chain1.Vulg <- ST.CARadaptive(formula = formula.Vulg, family ="gaussian", data=dataset_belt, W=Wg, burnin=20000, n.sample=220000, thin=100)
+# print(chain1.Vulg)
+# summary(chain1.Vulg)
+# summary(chain1.Vulg$samples)
+# summary(chain1.Vulg$samples$beta)
+# # According to the plot there was not convergence
+# plot(chain1.Vulg$samples$beta)
+# 
+# chain2.Vulg <- ST.CARadaptive(formula = formula.Vulg, family ="gaussian", data=dataset_belt, W=Wg, burnin=20000, n.sample=220000, thin=100)
+# print(chain2.Vulg)
+# summary(chain2.Vulg)
+# summary(chain2.Vulg$samples)
+# summary(chain2.Vulg$samples$beta)
+# # According to the plot there was not convergence
+# plot(chain2.Vulg$samples$beta)
+# 
+# chain3.Vulg <- ST.CARadaptive(formula = formula.Vulg, family ="gaussian", data=dataset_belt, W=Wg, burnin=20000, n.sample=220000, thin=100)
+# print(chain3.Vulg)
+# summary(chain3.Vulg)
+# summary(chain3.Vulg$samples)
+# summary(chain3.Vulg$samples$beta)
+# # According to the plot there was not convergence
+# plot(chain3.Vulg$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.Vulg$samples$beta, chain2.Vulg$samples$beta, chain3.Vulg$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+
+# This model also didn't converge; I also noticed after reviewing all of my preliminary data that there were no stepchange identified
+# Therefore, I decided I need to change my models to ST.CARar()
+# chain1.Vulg <- ST.CARadaptive(formula = formula.Vulg, family ="gaussian", data=dataset_belt, W=Wg, burnin=20000, n.sample=420000, thin=100)
+# print(chain1.Vulg)
+# summary(chain1.Vulg)
+# summary(chain1.Vulg$samples)
+# summary(chain1.Vulg$samples$beta)
+# # According to the plot there was not convergence
+# plot(chain1.Vulg$samples$beta)
+
+# Autoregressive CAR model - BeltLine only (I believe the reason I am getting an error message is I need use the mean of the data in determining the neighborhood matrix)
+
+# # Double checking that I don't have missing data
+# is.na(dataset_belt$Index_Vuln)
+# is.na(dataset_belt$Completed)
+# is.na(dataset_belt$Slated)
+# Preparing data for the new form of modeling, which involve using the average spatial pattern in vulnerability, housing market, and displacement risk over the 3 time points
+#Aggregate the data
+# dataset_belt_avg <- group_by(dataset_belt, GEOID) %>% 
+#   mutate(Index_Vuln.mean = Index_Vuln,
+#          Index_Housing.mean = Index_Housing,
+#          Index_DR.mean = Index_DR)
+# dataset_belt_avg <- dataset_belt_avg %>% 
+#   summarise(Index_Vuln.mean = mean(Index_Vuln),
+#             Index_Housing.mean = mean(Index_Housing),
+#             Index_DR.mean = mean(Index_DR))
+# # Creating a separate dataframe for only BeltLine block groups
+# bg_Atl <- bg_limits %>%
+#   filter(belt_flag=="Beltline")
+# # Joining the new information to the spatial polygon data
+# bg_Atl <- left_join(bg_Atl, dataset_belt_avg, by = c("GEOID" = "GEOID"))
+# 
+# # Neighborhood matrix
+# nbg <- poly2nb(bg_Atl$geometry, row.names = rownames(dataset_belt_avg$GEOID), queen = TRUE)
+# print(nbg)
+# # The zero.policy = TRUE accounts for regions with no neighbors found
+# nbg.list <- nb2listw(nbg, style = "B", zero.policy = TRUE)
+# Wg <- nb2mat(nbg, style = "B", zero.policy = TRUE)
+# # Find regions with no neighbors (output #57 = 131210036001)
+# no.neighbors <- which(rowSums(Wg)== 0)
+# # Remove row for geoid = 131210036001
+# bg_Atl <- bg_Atl[-57,]
+# dataset_belt <- dataset_belt[!dataset_belt$GEOID == "131210036001",]
+# # I need to run the neighborhood matrix again
+# nbg <- poly2nb(bg_Atl$geometry, row.names = rownames(dataset_belt_avg$GEOID), queen = TRUE)
+# nbg.list <- nb2listw(nbg, style = "B")
+# Wg <- nb2mat(nbg, style = "B")
+# 
+# # Autoregressive CAR model: Vulnerability Index
+# # n.sample tested = 220000, 420000, 200000, 300000 with burnin=30000
+# formula.Vulg <- dataset_belt$Index_Vuln ~ dataset_belt$Completed + dataset_belt$Slated
+# chain1.Vulg <- ST.CARar(formula = formula.Vulg, family ="gaussian", data=dataset_belt, W=Wg, burnin=200000, n.sample=5000000, thin=1000, AR=1)
+# print(chain1.Vulg)
+# summary(chain1.Vulg)
+# summary(chain1.Vulg$samples)
+# summary(chain1.Vulg$samples$beta)
+# # According to the plot there was not convergence
+# plot(chain1.Vulg$samples$beta)
+# 
+# chain2.Vulg <- ST.CARar(formula = formula.Vulg, family ="gaussian", data=dataset_belt, W=Wg, burnin=20000, n.sample=2200000, thin=1000, AR=1)
+# print(chain2.Vulg)
+# summary(chain2.Vulg)
+# summary(chain2.Vulg$samples)
+# summary(chain2.Vulg$samples$beta)
+# # According to the plot there was not convergence
+# plot(chain2.Vulg$samples$beta)
+# 
+# chain3.Vulg <- ST.CARar(formula = formula.Vulg, family ="gaussian", data=dataset_belt, W=Wg, burnin=200000, n.sample=5000000, thin=1000, AR=1)
+# print(chain3.Vulg)
+# summary(chain3.Vulg)
+# summary(chain3.Vulg$samples)
+# summary(chain3.Vulg$samples$beta)
+# # According to the plot there was not convergence
+# plot(chain3.Vulg$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.Vulg$samples$beta, chain2.Vulg$samples$beta, chain3.Vulg$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+
+
+
+# Based on my preliminary findings, I think I need to use the full dataset and not a subset because these results are not statistically significant, which I believe is why my models won't converge
+
+#Aggregate the data
+# dataset_id_avg <- group_by(dataset_id, GEOID) %>% 
+#   mutate(Index_Vuln.mean = Index_Vuln,
+#          Index_Housing.mean = Index_Housing,
+#          Index_DR.mean = Index_DR)
+# dataset_id_avg <- dataset_id_avg %>% 
+#   summarise(Index_Vuln.mean = mean(Index_Vuln),
+#             Index_Housing.mean = mean(Index_Housing),
+#             Index_DR.mean = mean(Index_DR))
+# 
+# # Joining the new information to the spatial polygon data
+# bg_limits_avg <- left_join(bg_limits, dataset_id_avg, by = c("GEOID" = "GEOID"))
+# 
+# # Neighborhood matrix
+# nb <- poly2nb(bg_limits_avg$geometry, row.names = rownames(dataset_id_avg$GEOID), queen = TRUE)
+# print(nb)
+# # There is a region with no neighbors (output #119 = 131219800001; it looks like it is the airport)
+# # The zero.policy = TRUE accounts for regions with no neighbors found
+# nb.list <- nb2listw(nb, style = "B", zero.policy = TRUE)
+# W <- nb2mat(nb, style = "B", zero.policy = TRUE)
+# # Remove row for geoid = 131219800001
+# bg_limits_avg <- bg_limits_avg[-119,]
+# dataset_id <- dataset_id[!dataset_id$GEOID == "131219800001",]
+# # I need to run the neighborhood matrix again
+# nb <- poly2nb(bg_limits_avg$geometry, row.names = rownames(dataset_id_avg$GEOID), queen = TRUE)
+# nb.list <- nb2listw(nb, style = "B", zero.policy = TRUE)
+# W <- nb2mat(nb, style = "B", zero.policy = TRUE)
+
+```
+
+
+```{r correlations,echo=FALSE, include=TRUE}
+# Examining the unstandardized variables, vulnerability index, housing market index, and DRI
+#corstars(dataset_id[,c(42:63,65,68:71,73,32,33,34,79,80)], method = "spearman", removeTriangle = "upper", result = "none")
+```
+
+
+# Research Question #1: Among BeltLine cbgs, how has completed or slated greenspace project affected the vulnerability index, housing market index, and the risk of displacement?
+
+```{r spatiotemporal indexes, echo=FALSE, cache=TRUE}
+
+# # Autoregressive CAR model - City of Atlanta
+# formula.DRI <- dataset_id$Index_Q_DR ~ dataset_id$belt_flag + dataset_id$Completed + dataset_id$Slated
+# # trials = needs to be a vector that is the same size and order as the response containing the total number of trials for each area and time period
+# N <- 3
+# K <- nrow(bg_limits_avg)
+# K_belt <- nrow(bg_Atl)
+# N.all = N * K
+# N.all_belt = N * K_belt
+# # number is 50 is a random number (I copied it from the example provided in Spatio-Temporal Areal Unit Modeling in R with Conditional Autoregressive Priors Using the CARBayesST Package)
+# n <-  rep(50, N.all)
+# n_belt <- rep(50, N.all_belt)
+# 
+# formula.DRI <- m$DR_High ~ m$belt_flag + m$Completed + m$Slated
+# chain1.DRI <- ST.CARar(formula = formula.DRI, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# 
+# formula.DRI <- b$DR_High ~ b$belt_flag + b$Completed + b$Slated
+# chain1.DRI <- ST.CARar(formula = formula.DRI, family ="binomial", trials = n_belt, data=b, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+# 
+# print(chain1.DRI)
+# summary(chain1.DRI)
+# summary(chain1.DRI$samples)
+# summary(chain1.DRI$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DRI$samples$beta)
+# 
+# formula.DRI <- m$DR_Low ~ m$belt_flag + m$Completed + m$Slated
+# chain1.DRI <- ST.CARar(formula = formula.DRI, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DRI)
+# summary(chain1.DRI)
+# summary(chain1.DRI$samples)
+# summary(chain1.DRI$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DRI$samples$beta)
+# 
+# formula.DRI <- m$DR_Mod ~ m$belt_flag + m$Completed + m$Slated
+# chain1.DRI <- ST.CARar(formula = formula.DRI, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DRI)
+# summary(chain1.DRI)
+# summary(chain1.DRI$samples)
+# summary(chain1.DRI$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DRI$samples$beta)
+# 
+# 
+# formula.Vul <- m$Vul_Low ~ m$belt_flag + m$Completed + m$Slated
+# chain1.Vul <- ST.CARar(formula = formula.Vul, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.Vul)
+# summary(chain1.Vul)
+# summary(chain1.Vul$samples)
+# summary(chain1.Vul$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.Vul$samples$beta)
+# 
+# formula.Vul <- m$Vul_Mod ~ m$belt_flag + m$Completed + m$Slated
+# chain1.Vul <- ST.CARar(formula = formula.Vul, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.Vul)
+# summary(chain1.Vul)
+# summary(chain1.Vul$samples)
+# summary(chain1.Vul$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.Vul$samples$beta)
+# 
+# formula.Vul <- m$Vul_High ~ m$belt_flag + m$Completed + m$Slated
+# chain1.Vul <- ST.CARar(formula = formula.Vul, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.Vul)
+# summary(chain1.Vul)
+# summary(chain1.Vul$samples)
+# summary(chain1.Vul$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.Vul$samples$beta)
+# 
+# 
+# formula.HM <- m$HM_Low ~ m$belt_flag + m$Completed + m$Slated
+# chain1.HM <- ST.CARar(formula = formula.HM, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.HM)
+# summary(chain1.HM)
+# summary(chain1.HM$samples)
+# summary(chain1.HM$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.HM$samples$beta)
+# 
+# formula.HM <- m$HM_Mod ~ m$belt_flag + m$Completed + m$Slated
+# chain1.HM <- ST.CARar(formula = formula.HM, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.HM)
+# summary(chain1.HM)
+# summary(chain1.HM$samples)
+# summary(chain1.HM$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.HM$samples$beta)
+# 
+# formula.HM <- m$HM_High ~ m$belt_flag + m$Completed + m$Slated
+# chain1.HM <- ST.CARar(formula = formula.HM, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.HM)
+# summary(chain1.HM)
+# summary(chain1.HM$samples)
+# summary(chain1.HM$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.HM$samples$beta)
+# 
+# dataset_id <- dataset_id %>% 
+#   mutate(belt_flag = as.factor(case_when(belt_flag == "Not Beltline" ~ 0,
+#                               belt_flag == "Beltline" ~ 1)))
+# formula.DR <- dataset_id$Index_DR ~ dataset_id$belt_flag + dataset_id$Completed + dataset_id$Slated
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+
+
+
+```
+
+# Research Question #2: Is the risk of displacement associated with different socially vulnerable residents?
+
+```{r DRI soc vul, echo=FALSE, cache=TRUE}
+
+# Autoregressive CAR model - City of Atlanta
+# formula.DR <- dataset_id$Index_DR ~ dataset_id$belt_flag + dataset_id$P_Black.y + dataset_id$P_Hispanic.y + dataset_id$P_AIAN.y + dataset_id$P_ASIAN.y + dataset_id$P_NHPI.y + dataset_id$P_Elderly.y + dataset_id$P_HSorLess.y + dataset_id$P_Renter.y + dataset_id$P_Poverty.y + dataset_id$P_LEP.y + dataset_id$P_Single.y + dataset_id$P_RentCostBurden.y + dataset_id$P_Own_Cost_Burden.y + dataset_id$P_Severe_RentCostBurden.y + dataset_id$P_Severe_OwnCostBurden.y
+# 
+# model1dr <- glm(formula = formula.DR, family = "gaussian", data = bg_limits_avg)
+# resid.glm1dr <- residuals(model1dr)
+# summary(model1dr)$coefficients
+# summary(model1dr)$dispersion
+# moran.mc(x = resid.glm1dr[1:316], listw = nb.list, nsim = 10000)
+# 
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples <- rbind(chain1.DR$samples$beta[,-1], chain2.DR$samples$beta[,-1], chain3.DR$samples$beta[,-1])
+# t(round(apply(beta.samples), 2, quantile, c(0.5, 0.025, 0.975)))
+# 
+# # Association between socially vulnerable populations and different categories of displacement risk
+# # High Displacement Risk
+# formula.DR <- m$DR_High ~ m$belt_flag + m$P_Black.y + m$P_Hispanic.y + m$P_AIAN.y + m$P_ASIAN.y + m$P_NHPI.y + m$P_Elderly.y + m$P_HSorLess.y + m$P_Renter.y + m$P_Poverty.y + m$P_LEP.y + m$P_Single.y + m$P_RentCostBurden.y + m$P_Own_Cost_Burden.y + m$P_Severe_RentCostBurden.y + m$P_Severe_OwnCostBurden.y
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples <- rbind(chain1$samples$beta[,-1], chain2$samples$beta[,-1], chain3$samples$beta[,-1])
+# t(round(apply(exp(beta.samples), 2, quantile,c(0.5, 0.025, 0.975)), 3))
+# 
+# 
+# # Low Displacement Risk
+# formula.DR <- m$DR_Low ~ m$belt_flag + m$P_Black.y + m$P_Hispanic.y + m$P_AIAN.y + m$P_ASIAN.y + m$P_NHPI.y + m$P_Elderly.y + m$P_HSorLess.y + m$P_Renter.y + m$P_Poverty.y + m$P_LEP.y + m$P_Single.y + m$P_RentCostBurden.y + m$P_Own_Cost_Burden.y + m$P_Severe_RentCostBurden.y + m$P_Severe_OwnCostBurden.y
+# formula.DR <- m$DR_High ~ m$belt_flag + m$P_Black.y + m$P_Hispanic.y + m$P_AIAN.y + m$P_ASIAN.y + m$P_NHPI.y + m$P_Elderly.y + m$P_HSorLess.y + m$P_Renter.y + m$P_Poverty.y + m$P_LEP.y + m$P_Single.y + m$P_RentCostBurden.y + m$P_Own_Cost_Burden.y + m$P_Severe_RentCostBurden.y + m$P_Severe_OwnCostBurden.y
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# 
+# 
+# # Moderate Displacement Risk
+# formula.DR <- m$DR_Mod ~ m$belt_flag + m$P_Black.y + m$P_Hispanic.y + m$P_AIAN.y + m$P_ASIAN.y + m$P_NHPI.y + m$P_Elderly.y + m$P_HSorLess.y + m$P_Renter.y + m$P_Poverty.y + m$P_LEP.y + m$P_Single.y + m$P_RentCostBurden.y + m$P_Own_Cost_Burden.y + m$P_Severe_RentCostBurden.y + m$P_Severe_OwnCostBurden.y
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# # Allows me to interpret as odds ratio
+# exp(coef(chain1.DR))
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+```
+
+# Research Question #3: Is the risk of displacement associated with specific types of housing markets?
+```{r DRI housing market, echo=FALSE, cache=TRUE}
+# Autoregressive CAR model - City of Atlanta
+# formula.DR <- dataset_id$Index_DR ~ dataset_id$belt_flag + dataset_id$MHV.y + dataset_id$MGR.y + dataset_id$P_Vacant.y + dataset_id$MHHI.y + dataset_id$CHU.y + dataset_id$P_Expire.y + dataset_id$LIC.y + dataset_id$Eligible_FR.y + dataset_id$R_Crime.y + dataset_id$R_Evict.y + dataset_id$R_File.y
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# 
+# 
+# # Association between housing markets and different categories of displacement risk
+# # High Displacement Risk
+# formula.DR <- m$DR_High ~ m$belt_flag + m$belt_flag + m$MHV.y + m$MGR.y + m$P_Vacant.y + m$MHHI.y + m$CHU.y + m$P_Expire.y + m$LIC.y + m$Eligible_FR.y + m$R_Crime.y + m$R_Evict.y + m$R_File.y
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# 
+# 
+# # Low Displacement Risk
+# formula.DR <- m$DR_Low ~ m$belt_flag + m$belt_flag + m$MHV.y + m$MGR.y + m$P_Vacant.y + m$MHHI.y + m$CHU.y + m$P_Expire.y + m$LIC.y + m$Eligible_FR.y + m$R_Crime.y + m$R_Evict.y + m$R_File.y
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# 
+# 
+# # Moderate Displacement Risk
+# formula.DR <- m$DR_Mod ~ m$belt_flag + m$belt_flag + m$MHV.y + m$MGR.y + m$P_Vacant.y + m$MHHI.y + m$CHU.y + m$P_Expire.y + m$LIC.y + m$Eligible_FR.y + m$R_Crime.y + m$R_Evict.y + m$R_File.y
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="binomial", trials = n, data=m, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+```
+
+```{r potential final models, echo=TRUE}
+# After running the preliminary models, I decided to run this as my final model.
+# After getting feedback from mentor and Andrew Greenlee - we decided these covariates are not the best for determining discriminant, predictive, and/or construct validity 
+# formula.DR <- dataset_id$Index_DR ~ dataset_id$Completed + dataset_id$Slated + dataset_id$P_Black.y + dataset_id$P_Hispanic.y + dataset_id$P_AIAN.y + dataset_id$P_ASIAN.y + dataset_id$P_NHPI.y + dataset_id$P_Elderly.y + dataset_id$P_HSorLess.y + dataset_id$P_Renter.y + dataset_id$P_Poverty.y + dataset_id$P_LEP.y + dataset_id$P_Single.y + dataset_id$P_RentCostBurden.y + dataset_id$P_Own_Cost_Burden.y + dataset_id$P_Severe_RentCostBurden.y + dataset_id$P_Severe_OwnCostBurden.y + dataset_id$MHV.y + dataset_id$MGR.y + dataset_id$P_Vacant.y + dataset_id$MHHI.y + dataset_id$CHU.y + dataset_id$P_Expire.y + dataset_id$LIC.y + dataset_id$Eligible_FR.y + dataset_id$R_Crime.y + dataset_id$R_Evict.y + dataset_id$R_File.y + dataset_id$PSU.y
+# 
+# model1dr <- glm(formula = formula.DR, family = "gaussian", data = bg_limits_avg)
+# resid.glm1dr <- residuals(model1dr)
+# summary(model1dr)$coefficients
+# summary(model1dr)$dispersion
+# moran.mc(x = resid.glm1dr[1:316], listw = nb.list, nsim = 10000)
+# 
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=dataset_id, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples.matrix <- rbind(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+```
+
+```{r new vars prep, echo=FALSE}
+
+dataset <- bind_rows(dataset_00, dataset_11, dataset_16)
+dataset_combined <- dataset %>% 
+  mutate(Index_Vuln = Index_Vuln[,1],
+         Index_Housing = Index_Housing[,1],
+         Index_DR = Index_DR[,1]) %>% 
+  dplyr::select(GEOID, S_Year, Index_Vuln, Index_Housing, Index_DR, Index_Q_Vuln, Index_Q_Housing, Index_Q_DR, Vuln_Cat, House_Cat, DR_Cat)
+
+datasetg <- dataset_green %>% 
+  dplyr::select(GEOID, Year, Completed, Slated)
+# After feedback from reviewers, we decided to test the predictive validity using data from 2017-2021
+# dataset_0016g <- left_join(dataset_0016g, dataset, by = c("GEOID" = "GEOID", "S_Year" = "S_Year"))
+# dataset_0016g <- left_join(dataset_0016g,datasetg, by = c("GEOID" = "GEOID", "S_Year" = "Year"))
+# dataset_0016g <- dataset_0016g %>%
+#   mutate(Completed = ifelse(belt_flag == "Not Beltline" & is.na(Completed), 0, Completed),
+#          Slated = ifelse(belt_flag == "Not Beltline" & is.na(Slated), 0, Slated))
+# dataset_0016 <- dataset_0016g %>%
+#   mutate(capita_nhpi = ifelse(capita_nhpi == "NaN", 0, capita_nhpi))
+
+# Remove geometry column
+bg_limits_nospatial <- st_set_geometry(bg_limits, NULL)
+
+# Create new datasets of tenure by race
+tenure_race0016 <- dataset_0016g%>% 
+  dplyr:: select(GEOID, belt_flag, P_rent_white, P_rent_black, P_rent_aian, P_rent_hispanic, P_rent_asian, P_rent_nhpi, P_own_white, P_own_black,
+                 P_own_aian, P_own_asian, P_own_nhpi, P_own_hispanic, S_Year)
+# Noticed that 129 block groups are missing from this new dataset
+tenure_race21 <- left_join(bg_limits_nospatial, dataset_21, by = c("GEOID" = "AREAKEY")) 
+# Decided inputting zero instead of keeping missing data as missing causes me to misinterpret displacement, so I'm going to drop the block groups that missing data for 2017-2021
+# tenure_race21 <- tenure_race21 %>%
+#   mutate(S_Year = ifelse(S_Year == "NaN" | is.na(S_Year), 2021, S_Year),
+#          P_rent_white = ifelse(P_rent_white == "NaN" | is.na(P_rent_white), 0, P_rent_white),
+#          P_rent_black = ifelse(P_rent_black == "NaN" | is.na(P_rent_black), 0, P_rent_black),
+#          P_rent_aian = ifelse(P_rent_aian == "NaN" | is.na(P_rent_aian), 0, P_rent_aian),
+#          P_rent_hispanic = ifelse(P_rent_hispanic == "NaN" | is.na(P_rent_hispanic), 0, P_rent_hispanic),
+#          P_rent_asian = ifelse(P_rent_asian == "NaN" | is.na(P_rent_asian), 0, P_rent_asian),
+#          P_rent_nhpi = ifelse(P_rent_nhpi == "NaN" | is.na(P_rent_nhpi), 0, P_rent_nhpi),
+#          P_own_white = ifelse(P_own_white == "NaN" | is.na(P_own_white), 0, P_own_white),
+#          P_own_black = ifelse(P_own_black == "NaN" | is.na(P_own_black), 0, P_own_black),
+#          P_own_aian = ifelse(P_own_aian == "NaN" | is.na(P_own_aian), 0, P_own_aian),
+#          P_own_hispanic = ifelse(P_own_hispanic == "NaN" | is.na(P_own_hispanic), 0, P_own_hispanic),
+#          P_own_asian = ifelse(P_own_asian == "NaN" | is.na(P_own_asian), 0, P_own_asian),
+#          P_own_nhpi = ifelse(P_own_nhpi == "NaN" | is.na(P_own_nhpi), 0, P_own_nhpi))
+tenure_race21 <- tenure_race21 %>% 
+  drop_na()
+
+# Combine different years of data for tenure by race
+# Only have complete data for 188 rows; subsetted data to only those block groups
+complete_21_GEOID <- tenure_race21 %>% 
+  dplyr::select(GEOID)
+# Combined the data for all of the years of data
+tenure_race_0021 <- bind_rows(tenure_race0016, tenure_race21)
+# Removed rows that I don't have complete data for 2021; Merged correctly only have 752 rows (188*4=752)
+tenure_race <- merge(x=complete_21_GEOID, y=tenure_race_0021, by = "GEOID", all.x = TRUE)
+
+#Aggregate the data
+dataset_id_avg <- group_by(dataset_id, GEOID) %>% 
+  mutate(Index_Vuln.mean = mean(Index_Vuln),
+         Index_Housing.mean = mean(Index_Housing),
+         Index_DR.mean =  mean(Index_DR)) %>% 
+  dplyr::select(GEOID,Index_Vuln.mean, Index_Housing.mean, Index_DR.mean)
+
+dataset_avg <- left_join(complete_21_GEOID, dataset_id_avg, by = "GEOID")
+# Remove duplicates
+dataset_avg <- dataset_avg %>% 
+  distinct()
+
+
+# Joining the new information to the spatial polygon data
+bg_limits_avg <- left_join(tenure_race, bg_limits, by = c("GEOID" = "GEOID", "belt_flag" = "belt_flag"))
+bg_limits_avg <- bg_limits_avg[!bg_limits_avg$GEOID == "131219800001",]
+#bg_limits_avg <- left_join(bg_limits_avg, dataset_id_avg, by = c("GEOID" = "GEOID", "belt_flag" = "belt_flag", "geometry.y" = "geometry"))
+dataset_id_avg <- left_join(bg_limits, dataset_avg, by = ("GEOID" = "GEOID")) %>% 
+  drop_na()
+dataset_id_avg <- dataset_id_avg[!dataset_id_avg$GEOID == "131219800001",]
+dataset_id_avg <- dataset_id_avg[!dataset_id_avg$GEOID == "131210089031",]
+
+
+# Neighborhood matrix
+# Changed the queen = FALSE to see if it will allow me to retain more block groups because I was losing block groups due to not having neighbors
+# If queen = FALSE, at least two boundary points must be within snap distance of each other, with the conventional name of a 'rook' relationship.
+nb <- poly2nb(dataset_id_avg$geometry, row.names = rownames(dataset_id_avg$GEOID), queen = FALSE)
+print(nb)
+# There is a region with no neighbors (output #119 = 131219800001; it looks like it is the airport)
+# Due to using a subset of complete data that includes 2021, there were additional regions with no neighbors (output #115 = 131210089031)
+# The zero.policy = TRUE accounts for regions with no neighbors found
+nb.list <- nb2listw(nb, style = "B", zero.policy = TRUE)
+W <- nb2mat(nb, style = "B", zero.policy = TRUE)
+
+# Including the Index data
+bg_limits_tenure <- left_join(bg_limits_avg, dataset_combined, by = c("GEOID" = "GEOID", "S_Year" = "S_Year"))
+bg_limits_tenure <- bg_limits_tenure[!bg_limits_tenure$GEOID == "131210089031",]
+
+# P_change <- bg_limits_avg %>%
+#   dplyr::select(GEOID, S_Year, P_rent_white, P_rent_black, P_rent_aian, P_rent_asian, P_rent_nhpi, P_rent_hispanic, P_own_white, P_own_black, P_own_aian, P_own_asian, P_own_nhpi, P_own_hispanic, P_rent_79_early, P_rent_80_89, P_rent_90_99, P_own_79_early, P_own_80_89, P_own_90_99, capita_white, capita_black, capita_aian, capita_asian, capita_nhpi, capita_hispanic)
+
+# P_change <- bg_limits_avg %>%
+#   dplyr::select(GEOID, S_Year, belt_flag, P_rent_white, P_rent_black, P_rent_aian, P_rent_asian, P_rent_nhpi, P_rent_hispanic, P_own_white, P_own_black, P_own_aian, P_own_asian, P_own_nhpi, P_own_hispanic)
+# 
+# # Calculate the Percent Change
+# P_change_data <- P_change %>% 
+#   group_by(GEOID) %>% 
+#   mutate(Pch_rent_white = ((P_rent_white/lag(P_rent_white)) - 1)*100,
+#          Pch_rent_black = ((P_rent_black/lag(P_rent_black)) - 1)*100,
+#          Pch_rent_aian = ((P_rent_aian/lag(P_rent_aian)) - 1)*100,
+#          Pch_rent_asian = ((P_rent_asian/lag(P_rent_asian)) - 1)*100,
+#          Pch_rent_nhpi = ((P_rent_nhpi/lag(P_rent_nhpi)) - 1)*100,
+#          Pch_rent_hispanic = ((P_rent_hispanic/lag(P_rent_hispanic)) - 1)*100,
+#          Pch_own_white = ((P_own_white/lag(P_own_white)) - 1)*100,
+#          Pch_own_black = ((P_own_black/lag(P_own_black)) - 1)*100,
+#          Pch_own_aian = ((P_own_aian/lag(P_own_aian)) - 1)*100,
+#          Pch_own_asian = ((P_own_asian/lag(P_own_asian)) - 1)*100,
+#          Pch_own_nhpi = ((P_own_nhpi/lag(P_own_nhpi)) - 1)*100,
+#          Pch_own_hispanic = ((P_own_hispanic/lag(P_own_hispanic)) - 1)*100)
+# 
+# Pch_data <- P_change_data %>% 
+#   mutate_all(funs(ifelse(is.na(.), 0, .))) %>% 
+#   mutate(Pch_rent_asian = ifelse(is.infinite(Pch_rent_asian), (P_rent_asian-lag(P_rent_asian))*100, Pch_rent_asian),
+#          Pch_rent_white = ifelse(is.infinite(Pch_rent_white), (P_rent_white-lag(P_rent_white))*100, Pch_rent_white),
+#          Pch_rent_black = ifelse(is.infinite(Pch_rent_black), (P_rent_black-lag(P_rent_black))*100, Pch_rent_black),
+#          Pch_rent_aian = ifelse(is.infinite(Pch_rent_aian), (P_rent_aian-lag(P_rent_aian))*100, Pch_rent_aian),
+#          Pch_rent_nhpi = ifelse(is.infinite(Pch_rent_nhpi), (P_rent_nhpi-lag(P_rent_nhpi))*100, Pch_rent_nhpi),
+#          Pch_rent_hispanic = ifelse(is.infinite(Pch_rent_hispanic), (P_rent_hispanic-lag(P_rent_hispanic))*100, Pch_rent_hispanic),
+#          Pch_own_white = ifelse(is.infinite(Pch_own_white), (P_own_white-lag(P_own_white))*100, Pch_own_white),
+#          Pch_own_black = ifelse(is.infinite(Pch_own_black), (P_own_black-lag(P_own_black))*100, Pch_own_black),
+#          Pch_own_aian = ifelse(is.infinite(Pch_own_aian), (P_own_aian-lag(P_own_aian))*100, Pch_own_aian),
+#          Pch_own_asian = ifelse(is.infinite(Pch_own_asian), (P_own_white-lag(P_own_asian))*100, Pch_own_asian),
+#          Pch_own_nhpi = ifelse(is.infinite(Pch_own_nhpi), (P_own_white-lag(P_own_nhpi))*100, Pch_own_nhpi),
+#          Pch_own_hispanic = ifelse(is.infinite(Pch_own_hispanic), (P_own_white-lag(P_own_hispanic))*100, Pch_own_hispanic))
+# 
+# 
+# # bg_limits_pch <- bg_limits_avg %>% 
+# #   dplyr::select(GEOID, belt_flag, S_Year, Index_Vuln, Index_Housing, Index_DR, Index_Q_Vuln, Index_Q_Housing, Index_Q_DR, Vuln_Cat, House_Cat, DR_Cat, Completed, Slated, geometry.y)
+# 
+# bg_limits_pch <- left_join(Pch_data, dataset_combined, by = c("GEOID" = "GEOID", "S_Year" = "S_Year"))
+# bg_limits_pch1 <- left_join(bg_limits_pch, bg_limits, by = c("GEOID" = "GEOID", "belt_flag" = "belt_flag"))
+# bg_limits_pch1 <- bg_limits_pch1[!bg_limits_pch1$GEOID == "131219800001",]
+
+# # Creating a separate dataframe for only BeltLine block groups
+# bg_Atl <- dataset_id_avg %>%
+#   filter(belt_flag=="Beltline")
+# # Remove row for geoid = 131210036001
+# bg_Atl <- bg_Atl[-57,]
+# 
+# bg_Atl_pch <- left_join(bg_limits_pch1, datasetg, by = c("GEOID" = "GEOID", "S_Year" = "Year"))
+# bg_Atl_pch1 <- bg_Atl_pch %>%
+#   filter(belt_flag=="Beltline")
+# bg_Atl_pch1 <- bg_Atl_pch1[!bg_Atl_pch1$GEOID == "131210036001",]
+# 
+# # Neighborhood matrix
+# nbg <- poly2nb(bg_Atl$geometry, row.names = rownames(bg_Atl$GEOID), queen = TRUE)
+# print(nbg)
+# nbg.list <- nb2listw(nbg, style = "B")
+# Wg <- nb2mat(nbg, style = "B")
+```
+
+
+```{r dri models, echo=FALSE}
+# # New variables
+# formula.DR <- bg_limits_avg$Index_DR ~ bg_limits_avg$Completed + bg_limits_avg$Slated + bg_limits_avg$belt_flag + bg_limits_avg$P_rent_white + bg_limits_avg$P_rent_black+ bg_limits_avg$P_rent_aian + bg_limits_avg$P_rent_asian + bg_limits_avg$P_rent_hispanic + bg_limits_avg$P_own_white + bg_limits_avg$P_own_black + bg_limits_avg$P_own_aian+ bg_limits_avg$P_own_asian + bg_limits_avg$P_own_nhpi + bg_limits_avg$P_own_hispanic + bg_limits_avg$P_rent_79_early + bg_limits_avg$P_rent_80_89 + bg_limits_avg$P_rent_90_99 + bg_limits_avg$P_own_79_early + bg_limits_avg$P_own_80_89 + bg_limits_avg$P_own_90_99 + bg_limits_avg$capita_white + bg_limits_avg$capita_black + bg_limits_avg$capita_aian + bg_limits_avg$capita_asian + bg_limits_avg$capita_nhpi + bg_limits_avg$capita_hispanic
+# model1dr <- glm(formula = formula.DR, family = "gaussian", data = dataset_id_avg)
+# resid.glm1dr <- residuals(model1dr)
+# summary(model1dr)$coefficients
+# summary(model1dr)$dispersion
+# moran.mc(x = resid.glm1dr[1:316], listw = nb.list, nsim = 10000)
+# 
+# 
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=bg_limits_avg, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=bg_limits_avg, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=bg_limits_avg, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples.matrix <- rbind(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+# 
+# # Percent change
+# formula.DR <- bg_limits_pch1$Index_DR ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$Pch_rent_white + bg_limits_pch1$Pch_rent_black+ bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$Pch_rent_asian + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$Pch_own_aian+ bg_limits_pch1$Pch_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$Pch_own_hispanic + bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$Pch_own_90_99 + bg_limits_pch1$Pch_capita_white + bg_limits_pch1$Pch_capita_black + bg_limits_pch1$Pch_capita_aian + bg_limits_pch1$Pch_capita_asian + bg_limits_pch1$Pch_capita_nhpi + bg_limits_pch1$Pch_capita_hispanic
+# 
+# model1dr <- glm(formula = formula.DR, family = "gaussian", data = dataset_id_avg)
+# resid.glm1dr <- residuals(model1dr)
+# summary(model1dr)$coefficients
+# summary(model1dr)$dispersion
+# moran.mc(x = resid.glm1dr[1:316], listw = nb.list, nsim = 10000)
+# 
+# formula.DR <- bg_limits_pch1$Index_DR ~ bg_limits_pch1$Pch_rent_white + bg_limits_pch1$Pch_rent_black+ bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$Pch_rent_asian + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$Pch_own_aian+ bg_limits_pch1$Pch_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$Pch_own_hispanic 
+# 
+# formula.DR <- bg_limits_pch1$Index_DR ~ bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$Pch_own_90_99
+# 
+# # Percent change - Beltline 
+# formula.DR <- bg_Atl_pch1$Index_DR ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$Pch_rent_white + bg_Atl_pch1$Pch_rent_black+ bg_Atl_pch1$Pch_rent_aian + bg_Atl_pch1$Pch_rent_asian + bg_Atl_pch1$Pch_rent_hispanic + bg_Atl_pch1$Pch_own_white + bg_Atl_pch1$Pch_own_black + bg_Atl_pch1$Pch_own_aian+ bg_Atl_pch1$Pch_own_asian + bg_Atl_pch1$Pch_own_nhpi + bg_Atl_pch1$Pch_own_hispanic + bg_Atl_pch1$Pch_rent_79 + bg_Atl_pch1$Pch_rent_80_89 + bg_Atl_pch1$Pch_rent_90_99 + bg_Atl_pch1$Pch_own_79 + bg_Atl_pch1$Pch_own_80_89 + bg_Atl_pch1$Pch_own_90_99 + bg_Atl_pch1$Pch_capita_white + bg_Atl_pch1$Pch_capita_black + bg_Atl_pch1$Pch_capita_aian + bg_Atl_pch1$Pch_capita_asian + bg_Atl_pch1$Pch_capita_nhpi + bg_Atl_pch1$Pch_capita_hispanic
+# 
+# model1dr <- glm(formula = formula.DR, family = "gaussian", data = bg_Atl)
+# resid.glm1dr <- residuals(model1dr)
+# summary(model1dr)$coefficients
+# summary(model1dr)$dispersion
+# moran.mc(x = resid.glm1dr[1:87], listw = nbg.list, nsim = 10000)
+# 
+# chain1.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DR)
+# summary(chain1.DR)
+# summary(chain1.DR$samples)
+# summary(chain1.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.DR$samples$beta)
+# 
+# chain2.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DR)
+# summary(chain2.DR)
+# summary(chain2.DR$samples)
+# summary(chain2.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.DR$samples$beta)
+# 
+# chain3.DR <- ST.CARar(formula = formula.DR, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DR)
+# summary(chain3.DR)
+# summary(chain3.DR$samples)
+# summary(chain3.DR$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.DR$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples.matrix <- rbind(chain1.DR$samples$beta, chain2.DR$samples$beta, chain3.DR$samples$beta)
+# round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+```
+
+
+```{r racial tenure, echo=FALSE}
+
+# #formula.whrent <- bg_limits_avg$P_rent_white ~ bg_limits_avg$Completed + bg_limits_avg$Slated + bg_limits_avg$belt_flag
+# formula.whrent <- bg_limits_pch1$Pch_rent_white ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$DR_Cat
+# formula.whrent <- bg_limits_pch1$Pch_rent_white ~ bg_limits_pch1$belt_flag + bg_limits_pch1$DR_Cat
+# 
+# model1whrent <- glm(formula = formula.whrent, family = "gaussian", data = bg_limits_pch1)
+# resid.glm1whrent <- residuals(model1whrent)
+# summary(model1whrent)$coefficients
+# summary(model1whrent)$dispersion
+# moran.mc(x = resid.glm1whrent[1:316], listw = nb.list, nsim = 10000)
+# 
+# chain1.whrent <- ST.CARar(formula = formula.whrent, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.whrent)
+# summary(chain1.whrent)
+# summary(chain1.whrent$samples)
+# summary(chain1.whrent$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.whrent$samples$beta)
+# 
+# chain2.whrent <- ST.CARar(formula = formula.whrent, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.whrent)
+# summary(chain2.whrent)
+# summary(chain2.whrent$samples)
+# summary(chain2.whrent$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.whrent$samples$beta)
+# 
+# chain3.whrent <- ST.CARar(formula = formula.whrent, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.whrent)
+# summary(chain3.whrent)
+# summary(chain3.whrent$samples)
+# summary(chain3.whrent$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.whrent$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.whrent$samples$beta, chain2.whrent$samples$beta, chain3.whrent$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples.matrix <- rbind(chain1.whrent$samples$beta, chain2.whrent$samples$beta, chain3.whrent$samples$beta)
+# round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+```
+
+```{r tenure year moved, echo=TRUE}
+# formula.79rent <- bg_limits_pch1$Pch_rent_79 ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$DR_Cat
+# 
+# model179rent <- glm(formula = formula.79rent, family = "gaussian", data = bg_limits_pch1)
+# resid.glm179rent <- residuals(model179rent)
+# summary(model179rent)$coefficients
+# summary(model179rent)$dispersion
+# moran.mc(x = resid.glm179rent[1:316], listw = nb.list, nsim = 10000)
+# 
+# chain1.79rent <- ST.CARar(formula = formula.79rent, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.79rent)
+# summary(chain1.79rent)
+# summary(chain1.79rent$samples)
+# summary(chain1.79rent$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.79rent$samples$beta)
+# 
+# chain2.79rent <- ST.CARar(formula = formula.79rent, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.79rent)
+# summary(chain2.79rent)
+# summary(chain2.79rent$samples)
+# summary(chain2.79rent$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.79rent$samples$beta)
+# 
+# chain3.79rent <- ST.CARar(formula = formula.79rent, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.79rent)
+# summary(chain3.79rent)
+# summary(chain3.79rent$samples)
+# summary(chain3.79rent$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.79rent$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.79rent$samples$beta, chain2.79rent$samples$beta, chain3.79rent$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples.matrix <- rbind(chain1.79rent$samples$beta, chain2.79rent$samples$beta, chain3.79rent$samples$beta)
+# round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+```
+```{r}
+# formula.blkown <- bg_limits_pch1$Pch_own_black ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$DR_Cat
+# 
+# model1blkown <- glm(formula = formula.blkown, family = "gaussian", data = bg_limits_pch1)
+# resid.glm1blkown <- residuals(model1blkown)
+# summary(model1blkown)$coefficients
+# summary(model1blkown)$dispersion
+# moran.mc(x = resid.glm1blkown[1:316], listw = nb.list, nsim = 10000)
+# 
+# chain1.blkown <- ST.CARar(formula = formula.blkown, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.blkown)
+# summary(chain1.blkown)
+# summary(chain1.blkown$samples)
+# summary(chain1.blkown$samples$beta)
+# # According to the plot there was convergence
+# plot(chain1.blkown$samples$beta)
+# 
+# chain2.blkown <- ST.CARar(formula = formula.blkown, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.blkown)
+# summary(chain2.blkown)
+# summary(chain2.blkown$samples)
+# summary(chain2.blkown$samples$beta)
+# # According to the plot there was convergence
+# plot(chain2.blkown$samples$beta)
+# 
+# chain3.blkown <- ST.CARar(formula = formula.blkown, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.blkown)
+# summary(chain3.blkown)
+# summary(chain3.blkown$samples)
+# summary(chain3.blkown$samples$beta)
+# # According to the plot there was convergence
+# plot(chain3.blkown$samples$beta)
+# 
+# beta.samples <- mcmc.list(chain1.blkown$samples$beta, chain2.blkown$samples$beta, chain3.blkown$samples$beta)
+# plot(beta.samples)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples)
+# beta.samples.matrix <- rbind(chain1.blkown$samples$beta, chain2.blkown$samples$beta, chain3.blkown$samples$beta)
+# round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+```
+```{r vuln model, echo=FALSE}
+formula.Vuln <- bg_limits_pch1$Index_Vuln ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$P_rent_white + bg_limits_pch1$P_rent_black+ bg_limits_pch1$P_rent_aian + bg_limits_pch1$P_rent_asian + bg_limits_pch1$P_rent_hispanic + bg_limits_pch1$P_own_white + bg_limits_pch1$P_own_black + bg_limits_pch1$P_own_aian+ bg_limits_pch1$P_own_asian + bg_limits_pch1$P_own_nhpi + bg_limits_pch1$P_own_hispanic + bg_limits_pch1$P_rent_79_early + bg_limits_pch1$P_rent_80_89 + bg_limits_pch1$P_rent_90_99 + bg_limits_pch1$P_own_79_early + bg_limits_pch1$P_own_80_89 + bg_limits_pch1$P_own_90_99 
+
+model1vuln <- glm(formula = formula.Vuln, family = "gaussian", data = dataset_id_avg)
+resid.glm1vuln <- residuals(model1vuln)
+summary(model1vuln)$coefficients
+summary(model1vuln)$dispersion
+moran.mc(x = resid.glm1vuln[1:316], listw = nb.list, nsim = 10000)
+
+chain1.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Vuln)
+summary(chain1.Vuln)
+summary(chain1.Vuln$samples)
+summary(chain1.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Vuln$samples$beta)
+
+chain2.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Vuln)
+summary(chain2.Vuln)
+summary(chain2.Vuln$samples)
+summary(chain2.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Vuln$samples$beta)
+
+chain3.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Vuln)
+summary(chain3.Vuln)
+summary(chain3.Vuln$samples)
+summary(chain3.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Vuln$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Vuln <- bg_limits_pch1$Index_Vuln ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$Pch_rent_white + bg_limits_pch1$Pch_rent_black+ bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$Pch_rent_asian + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$Pch_own_aian+ bg_limits_pch1$Pch_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$Pch_own_hispanic + bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$Pch_own_90_99 
+
+model1vuln <- glm(formula = formula.Vuln, family = "gaussian", data = dataset_id_avg)
+resid.glm1vuln <- residuals(model1vuln)
+summary(model1vuln)$coefficients
+summary(model1vuln)$dispersion
+moran.mc(x = resid.glm1vuln[1:316], listw = nb.list, nsim = 10000)
+
+chain1.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Vuln)
+summary(chain1.Vuln)
+summary(chain1.Vuln$samples)
+summary(chain1.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Vuln$samples$beta)
+
+chain2.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Vuln)
+summary(chain2.Vuln)
+summary(chain2.Vuln$samples)
+summary(chain2.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Vuln$samples$beta)
+
+chain3.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Vuln)
+summary(chain3.Vuln)
+summary(chain3.Vuln$samples)
+summary(chain3.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Vuln$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Vuln <- bg_limits_pch1$Index_Vuln ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$Pch_rent_white + bg_limits_pch1$P_rent_white + bg_limits_pch1$Pch_rent_black + bg_limits_pch1$P_rent_black + bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$P_rent_aian + bg_limits_pch1$Pch_rent_asian  + bg_limits_pch1$P_rent_asian + bg_limits_pch1$Pch_rent_nhpi  + bg_limits_pch1$P_rent_nhpi + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$P_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$P_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$P_own_black + bg_limits_pch1$Pch_own_aian  + bg_limits_pch1$P_own_aian + bg_limits_pch1$Pch_own_asian + bg_limits_pch1$P_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$P_own_nhpi + bg_limits_pch1$Pch_own_hispanic + bg_limits_pch1$P_own_hispanic + bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$P_rent_79_early + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$P_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$P_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$P_own_79_early + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$P_own_80_89 + bg_limits_pch1$Pch_own_90_99 + bg_limits_pch1$P_own_90_99 
+
+model1vuln <- glm(formula = formula.Vuln, family = "gaussian", data = dataset_id_avg)
+resid.glm1vuln <- residuals(model1vuln)
+summary(model1vuln)$coefficients
+summary(model1vuln)$dispersion
+moran.mc(x = resid.glm1vuln[1:316], listw = nb.list, nsim = 10000)
+
+chain1.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Vuln)
+summary(chain1.Vuln)
+summary(chain1.Vuln$samples)
+summary(chain1.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Vuln$samples$beta)
+
+chain2.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Vuln)
+summary(chain2.Vuln)
+summary(chain2.Vuln$samples)
+summary(chain2.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Vuln$samples$beta)
+
+chain3.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Vuln)
+summary(chain3.Vuln)
+summary(chain3.Vuln$samples)
+summary(chain3.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Vuln$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+
+# Beltline
+formula.Vuln <- bg_Atl_pch1$Index_Vuln ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$Pch_rent_white + bg_Atl_pch1$Pch_rent_black+ bg_Atl_pch1$Pch_rent_aian + bg_Atl_pch1$Pch_rent_asian + bg_Atl_pch1$Pch_rent_hispanic + bg_Atl_pch1$Pch_own_white + bg_Atl_pch1$Pch_own_black + bg_Atl_pch1$Pch_own_aian+ bg_Atl_pch1$Pch_own_asian + bg_Atl_pch1$Pch_own_nhpi + bg_Atl_pch1$Pch_own_hispanic + bg_Atl_pch1$Pch_rent_79 + bg_Atl_pch1$Pch_rent_80_89 + bg_Atl_pch1$Pch_rent_90_99 + bg_Atl_pch1$Pch_own_79 + bg_Atl_pch1$Pch_own_80_89 + bg_Atl_pch1$Pch_own_90_99 
+
+model1vuln <- glm(formula = formula.Vuln, family = "gaussian", data = bg_Atl)
+resid.glm1vuln <- residuals(model1vuln)
+summary(model1vuln)$coefficients
+summary(model1vuln)$dispersion
+moran.mc(x = resid.glm1vuln[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Vuln)
+summary(chain1.Vuln)
+summary(chain1.Vuln$samples)
+summary(chain1.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Vuln$samples$beta)
+
+chain2.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Vuln)
+summary(chain2.Vuln)
+summary(chain2.Vuln$samples)
+summary(chain2.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Vuln$samples$beta)
+
+chain3.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Vuln)
+summary(chain3.Vuln)
+summary(chain3.Vuln$samples)
+summary(chain3.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Vuln$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Vuln <- bg_Atl_pch1$Index_Vuln ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$P_rent_white + bg_Atl_pch1$P_rent_black+ bg_Atl_pch1$P_rent_aian + bg_Atl_pch1$P_rent_asian + bg_Atl_pch1$P_rent_hispanic + bg_Atl_pch1$P_own_white + bg_Atl_pch1$P_own_black + bg_Atl_pch1$P_own_aian+ bg_Atl_pch1$P_own_asian + bg_Atl_pch1$P_own_nhpi + bg_Atl_pch1$P_own_hispanic + bg_Atl_pch1$P_rent_79 + bg_Atl_pch1$P_rent_80_89 + bg_Atl_pch1$P_rent_90_99 + bg_Atl_pch1$P_own_79 + bg_Atl_pch1$P_own_80_89 + bg_Atl_pch1$P_own_90_99 
+
+model1vuln <- glm(formula = formula.Vuln, family = "gaussian", data = bg_Atl)
+resid.glm1vuln <- residuals(model1vuln)
+summary(model1vuln)$coefficients
+summary(model1vuln)$dispersion
+moran.mc(x = resid.glm1vuln[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Vuln)
+summary(chain1.Vuln)
+summary(chain1.Vuln$samples)
+summary(chain1.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Vuln$samples$beta)
+
+chain2.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Vuln)
+summary(chain2.Vuln)
+summary(chain2.Vuln$samples)
+summary(chain2.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Vuln$samples$beta)
+
+chain3.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Vuln)
+summary(chain3.Vuln)
+summary(chain3.Vuln$samples)
+summary(chain3.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Vuln$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Vuln <- bg_Atl_pch1$Index_Vuln ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$Pch_rent_white + bg_Atl_pch1$P_rent_white + bg_Atl_pch1$Pch_rent_black + bg_Atl_pch1$P_rent_black + bg_Atl_pch1$Pch_rent_aian + bg_Atl_pch1$P_rent_aian + bg_Atl_pch1$Pch_rent_asian + bg_Atl_pch1$P_rent_asian + bg_Atl_pch1$Pch_rent_nhpi + bg_Atl_pch1$P_rent_nhpi + bg_Atl_pch1$Pch_rent_hispanic + bg_Atl_pch1$P_rent_hispanic + bg_Atl_pch1$Pch_own_white + bg_Atl_pch1$P_own_white + bg_Atl_pch1$Pch_own_black + bg_Atl_pch1$P_own_black  + bg_Atl_pch1$Pch_own_aian + bg_Atl_pch1$P_own_aian + bg_Atl_pch1$Pch_own_asian + bg_Atl_pch1$P_own_asian  + bg_Atl_pch1$Pch_own_nhpi + bg_Atl_pch1$P_own_nhpi + bg_Atl_pch1$Pch_own_hispanic + bg_Atl_pch1$P_own_hispanic + bg_Atl_pch1$Pch_rent_79 + bg_Atl_pch1$P_rent_79 + bg_Atl_pch1$Pch_rent_80_89 + bg_Atl_pch1$P_rent_80_89 + bg_Atl_pch1$Pch_rent_90_99 + bg_Atl_pch1$P_rent_90_99 + bg_Atl_pch1$Pch_own_79 + bg_Atl_pch1$P_own_79 + bg_Atl_pch1$Pch_own_80_89 + bg_Atl_pch1$P_own_80_89 + bg_Atl_pch1$Pch_own_90_99 + bg_Atl_pch1$P_own_90_99 
+
+model1vuln <- glm(formula = formula.Vuln, family = "gaussian", data = bg_Atl)
+resid.glm1vuln <- residuals(model1vuln)
+summary(model1vuln)$coefficients
+summary(model1vuln)$dispersion
+moran.mc(x = resid.glm1vuln[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Vuln)
+summary(chain1.Vuln)
+summary(chain1.Vuln$samples)
+summary(chain1.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Vuln$samples$beta)
+
+chain2.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Vuln)
+summary(chain2.Vuln)
+summary(chain2.Vuln$samples)
+summary(chain2.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Vuln$samples$beta)
+
+chain3.Vuln <- ST.CARar(formula = formula.Vuln, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Vuln)
+summary(chain3.Vuln)
+summary(chain3.Vuln$samples)
+summary(chain3.Vuln$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Vuln$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Vuln$samples$beta, chain2.Vuln$samples$beta, chain3.Vuln$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+```
+
+
+```{r housing model, echo=FALSE}
+formula.Housing <- bg_limits_pch1$Index_Housing ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$P_rent_white + bg_limits_pch1$P_rent_black+ bg_limits_pch1$P_rent_aian + bg_limits_pch1$P_rent_asian + bg_limits_pch1$P_rent_hispanic + bg_limits_pch1$P_own_white + bg_limits_pch1$P_own_black + bg_limits_pch1$P_own_aian+ bg_limits_pch1$P_own_asian + bg_limits_pch1$P_own_nhpi + bg_limits_pch1$P_own_hispanic + bg_limits_pch1$P_rent_79_early + bg_limits_pch1$P_rent_80_89 + bg_limits_pch1$P_rent_90_99 + bg_limits_pch1$P_own_79_early + bg_limits_pch1$P_own_80_89 + bg_limits_pch1$P_own_90_99 
+
+model1housing <- glm(formula = formula.Housing, family = "gaussian", data = dataset_id_avg)
+resid.glm1housing <- residuals(model1housing)
+summary(model1housing)$coefficients
+summary(model1housing)$dispersion
+moran.mc(x = resid.glm1housing[1:316], listw = nb.list, nsim = 10000)
+
+chain1.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Housing)
+summary(chain1.Housing)
+summary(chain1.Housing$samples)
+summary(chain1.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Housing$samples$beta)
+
+chain2.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Housing)
+summary(chain2.Housing)
+summary(chain2.Housing$samples)
+summary(chain2.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Housing$samples$beta)
+
+chain3.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Housing)
+summary(chain3.Housing)
+summary(chain3.Housing$samples)
+summary(chain3.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Housing$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Housing <- bg_limits_pch1$Index_Housing ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$Pch_rent_white + bg_limits_pch1$Pch_rent_black+ bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$Pch_rent_asian + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$Pch_own_aian+ bg_limits_pch1$Pch_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$Pch_own_hispanic + bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$Pch_own_90_99 
+
+model1Housing <- glm(formula = formula.Housing, family = "gaussian", data = dataset_id_avg)
+resid.glm1Housing <- residuals(model1Housing)
+summary(model1Housing)$coefficients
+summary(model1Housing)$dispersion
+moran.mc(x = resid.glm1Housing[1:316], listw = nb.list, nsim = 10000)
+
+chain1.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Housing)
+summary(chain1.Housing)
+summary(chain1.Housing$samples)
+summary(chain1.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Housing$samples$beta)
+
+chain2.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Housing)
+summary(chain2.Housing)
+summary(chain2.Housing$samples)
+summary(chain2.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Housing$samples$beta)
+
+chain3.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Housing)
+summary(chain3.Housing)
+summary(chain3.Housing$samples)
+summary(chain3.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Housing$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Housing <- bg_limits_pch1$Index_Housing ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$Pch_rent_white + bg_limits_pch1$P_rent_white + bg_limits_pch1$Pch_rent_black + bg_limits_pch1$P_rent_black + bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$P_rent_aian + bg_limits_pch1$Pch_rent_asian  + bg_limits_pch1$P_rent_asian + bg_limits_pch1$Pch_rent_nhpi  + bg_limits_pch1$P_rent_nhpi + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$P_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$P_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$P_own_black + bg_limits_pch1$Pch_own_aian  + bg_limits_pch1$P_own_aian + bg_limits_pch1$Pch_own_asian + bg_limits_pch1$P_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$P_own_nhpi + bg_limits_pch1$Pch_own_hispanic + bg_limits_pch1$P_own_hispanic + bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$P_rent_79_early + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$P_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$P_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$P_own_79_early + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$P_own_80_89 + bg_limits_pch1$Pch_own_90_99 + bg_limits_pch1$P_own_90_99 
+
+model1Housing <- glm(formula = formula.Housing, family = "gaussian", data = dataset_id_avg)
+resid.glm1Housing <- residuals(model1Housing)
+summary(model1Housing)$coefficients
+summary(model1Housing)$dispersion
+moran.mc(x = resid.glm1Housing[1:316], listw = nb.list, nsim = 10000)
+
+chain1.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Housing)
+summary(chain1.Housing)
+summary(chain1.Housing$samples)
+summary(chain1.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Housing$samples$beta)
+
+chain2.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Housing)
+summary(chain2.Housing)
+summary(chain2.Housing$samples)
+summary(chain2.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Housing$samples$beta)
+
+chain3.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Housing)
+summary(chain3.Housing)
+summary(chain3.Housing$samples)
+summary(chain3.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Housing$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+# Beltline
+formula.Housing <- bg_Atl_pch1$Index_Housing ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$Pch_rent_white + bg_Atl_pch1$Pch_rent_black+ bg_Atl_pch1$Pch_rent_aian + bg_Atl_pch1$Pch_rent_asian + bg_Atl_pch1$Pch_rent_hispanic + bg_Atl_pch1$Pch_own_white + bg_Atl_pch1$Pch_own_black + bg_Atl_pch1$Pch_own_aian+ bg_Atl_pch1$Pch_own_asian + bg_Atl_pch1$Pch_own_nhpi + bg_Atl_pch1$Pch_own_hispanic + bg_Atl_pch1$Pch_rent_79 + bg_Atl_pch1$Pch_rent_80_89 + bg_Atl_pch1$Pch_rent_90_99 + bg_Atl_pch1$Pch_own_79 + bg_Atl_pch1$Pch_own_80_89 + bg_Atl_pch1$Pch_own_90_99 
+
+model1Housing <- glm(formula = formula.Housing, family = "gaussian", data = bg_Atl)
+resid.glm1Housing <- residuals(model1Housing)
+summary(model1Housing)$coefficients
+summary(model1Housing)$dispersion
+moran.mc(x = resid.glm1Housing[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Housing)
+summary(chain1.Housing)
+summary(chain1.Housing$samples)
+summary(chain1.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Housing$samples$beta)
+
+chain2.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Housing)
+summary(chain2.Housing)
+summary(chain2.Housing$samples)
+summary(chain2.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Housing$samples$beta)
+
+chain3.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Housing)
+summary(chain3.Housing)
+summary(chain3.Housing$samples)
+summary(chain3.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Housing$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Housing <- bg_Atl_pch1$Index_Housing ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$P_rent_white + bg_Atl_pch1$P_rent_black+ bg_Atl_pch1$P_rent_aian + bg_Atl_pch1$P_rent_asian + bg_Atl_pch1$P_rent_hispanic + bg_Atl_pch1$P_own_white + bg_Atl_pch1$P_own_black + bg_Atl_pch1$P_own_aian+ bg_Atl_pch1$P_own_asian + bg_Atl_pch1$P_own_nhpi + bg_Atl_pch1$P_own_hispanic + bg_Atl_pch1$P_rent_79 + bg_Atl_pch1$P_rent_80_89 + bg_Atl_pch1$P_rent_90_99 + bg_Atl_pch1$P_own_79 + bg_Atl_pch1$P_own_80_89 + bg_Atl_pch1$P_own_90_99 
+
+model1Housing <- glm(formula = formula.Housing, family = "gaussian", data = bg_Atl)
+resid.glm1Housing <- residuals(model1Housing)
+summary(model1Housing)$coefficients
+summary(model1Housing)$dispersion
+moran.mc(x = resid.glm1Housing[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Housing)
+summary(chain1.Housing)
+summary(chain1.Housing$samples)
+summary(chain1.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Housing$samples$beta)
+
+chain2.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Housing)
+summary(chain2.Housing)
+summary(chain2.Housing$samples)
+summary(chain2.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Housing$samples$beta)
+
+chain3.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Housing)
+summary(chain3.Housing)
+summary(chain3.Housing$samples)
+summary(chain3.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Housing$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.Housing <- bg_Atl_pch1$Index_Housing ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$Pch_rent_white + bg_Atl_pch1$P_rent_white + bg_Atl_pch1$Pch_rent_black + bg_Atl_pch1$P_rent_black + bg_Atl_pch1$Pch_rent_aian + bg_Atl_pch1$P_rent_aian + bg_Atl_pch1$Pch_rent_asian + bg_Atl_pch1$P_rent_asian + bg_Atl_pch1$Pch_rent_nhpi + bg_Atl_pch1$P_rent_nhpi + bg_Atl_pch1$Pch_rent_hispanic + bg_Atl_pch1$P_rent_hispanic + bg_Atl_pch1$Pch_own_white + bg_Atl_pch1$P_own_white + bg_Atl_pch1$Pch_own_black + bg_Atl_pch1$P_own_black  + bg_Atl_pch1$Pch_own_aian + bg_Atl_pch1$P_own_aian + bg_Atl_pch1$Pch_own_asian + bg_Atl_pch1$P_own_asian  + bg_Atl_pch1$Pch_own_nhpi + bg_Atl_pch1$P_own_nhpi + bg_Atl_pch1$Pch_own_hispanic + bg_Atl_pch1$P_own_hispanic + bg_Atl_pch1$Pch_rent_79 + bg_Atl_pch1$P_rent_79 + bg_Atl_pch1$Pch_rent_80_89 + bg_Atl_pch1$P_rent_80_89 + bg_Atl_pch1$Pch_rent_90_99 + bg_Atl_pch1$P_rent_90_99 + bg_Atl_pch1$Pch_own_79 + bg_Atl_pch1$P_own_79 + bg_Atl_pch1$Pch_own_80_89 + bg_Atl_pch1$P_own_80_89 + bg_Atl_pch1$Pch_own_90_99 + bg_Atl_pch1$P_own_90_99 
+
+model1Housing <- glm(formula = formula.Housing, family = "gaussian", data = bg_Atl)
+resid.glm1Housing <- residuals(model1Housing)
+summary(model1Housing)$coefficients
+summary(model1Housing)$dispersion
+moran.mc(x = resid.glm1Housing[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.Housing)
+summary(chain1.Housing)
+summary(chain1.Housing$samples)
+summary(chain1.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain1.Housing$samples$beta)
+
+chain2.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.Housing)
+summary(chain2.Housing)
+summary(chain2.Housing$samples)
+summary(chain2.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain2.Housing$samples$beta)
+
+chain3.Housing <- ST.CARar(formula = formula.Housing, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.Housing)
+summary(chain3.Housing)
+summary(chain3.Housing$samples)
+summary(chain3.Housing$samples$beta)
+# According to the plot there was convergence
+plot(chain3.Housing$samples$beta)
+
+beta.samples <- mcmc.list(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.Housing$samples$beta, chain2.Housing$samples$beta, chain3.Housing$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+```
+
+
+```{r DRI model, echo=FALSE}
+formula.DRI <- bg_limits_pch1$Index_DR ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$P_rent_white + bg_limits_pch1$P_rent_black+ bg_limits_pch1$P_rent_aian + bg_limits_pch1$P_rent_asian + bg_limits_pch1$P_rent_hispanic + bg_limits_pch1$P_own_white + bg_limits_pch1$P_own_black + bg_limits_pch1$P_own_aian+ bg_limits_pch1$P_own_asian + bg_limits_pch1$P_own_nhpi + bg_limits_pch1$P_own_hispanic + bg_limits_pch1$P_rent_79_early + bg_limits_pch1$P_rent_80_89 + bg_limits_pch1$P_rent_90_99 + bg_limits_pch1$P_own_79_early + bg_limits_pch1$P_own_80_89 + bg_limits_pch1$P_own_90_99 
+
+model1DRI <- glm(formula = formula.DRI, family = "gaussian", data = dataset_id_avg)
+resid.glm1DRI <- residuals(model1DRI)
+summary(model1DRI)$coefficients
+summary(model1DRI)$dispersion
+moran.mc(x = resid.glm1DRI[1:316], listw = nb.list, nsim = 10000)
+
+chain1.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.DRI)
+summary(chain1.DRI)
+summary(chain1.DRI$samples)
+summary(chain1.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain1.DRI$samples$beta)
+
+chain2.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.DRI)
+summary(chain2.DRI)
+summary(chain2.DRI$samples)
+summary(chain2.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain2.DRI$samples$beta)
+
+chain3.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.DRI)
+summary(chain3.DRI)
+summary(chain3.DRI$samples)
+summary(chain3.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain3.DRI$samples$beta)
+
+beta.samples <- mcmc.list(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.DRI <- bg_limits_pch1$Index_DR ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$Pch_rent_white + bg_limits_pch1$Pch_rent_black+ bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$Pch_rent_asian + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$Pch_own_aian+ bg_limits_pch1$Pch_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$Pch_own_hispanic + bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$Pch_own_90_99 
+
+model1DRI <- glm(formula = formula.DRI, family = "gaussian", data = dataset_id_avg)
+resid.glm1DRI <- residuals(model1DRI)
+summary(model1DRI)$coefficients
+summary(model1DRI)$dispersion
+moran.mc(x = resid.glm1DRI[1:316], listw = nb.list, nsim = 10000)
+
+chain1.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.DRI)
+summary(chain1.DRI)
+summary(chain1.DRI$samples)
+summary(chain1.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain1.DRI$samples$beta)
+
+chain2.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.DRI)
+summary(chain2.DRI)
+summary(chain2.DRI$samples)
+summary(chain2.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain2.DRI$samples$beta)
+
+chain3.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.DRI)
+summary(chain3.DRI)
+summary(chain3.DRI$samples)
+summary(chain3.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain3.DRI$samples$beta)
+
+beta.samples <- mcmc.list(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.DRI <- bg_limits_pch1$Index_DR ~ bg_limits_pch1$Completed + bg_limits_pch1$Slated + bg_limits_pch1$belt_flag + bg_limits_pch1$Pch_rent_white + bg_limits_pch1$P_rent_white + bg_limits_pch1$Pch_rent_black + bg_limits_pch1$P_rent_black + bg_limits_pch1$Pch_rent_aian + bg_limits_pch1$P_rent_aian + bg_limits_pch1$Pch_rent_asian  + bg_limits_pch1$P_rent_asian + bg_limits_pch1$Pch_rent_nhpi  + bg_limits_pch1$P_rent_nhpi + bg_limits_pch1$Pch_rent_hispanic + bg_limits_pch1$P_rent_hispanic + bg_limits_pch1$Pch_own_white + bg_limits_pch1$P_own_white + bg_limits_pch1$Pch_own_black + bg_limits_pch1$P_own_black + bg_limits_pch1$Pch_own_aian  + bg_limits_pch1$P_own_aian + bg_limits_pch1$Pch_own_asian + bg_limits_pch1$P_own_asian + bg_limits_pch1$Pch_own_nhpi + bg_limits_pch1$P_own_nhpi + bg_limits_pch1$Pch_own_hispanic + bg_limits_pch1$P_own_hispanic + bg_limits_pch1$Pch_rent_79 + bg_limits_pch1$P_rent_79_early + bg_limits_pch1$Pch_rent_80_89 + bg_limits_pch1$P_rent_80_89 + bg_limits_pch1$Pch_rent_90_99 + bg_limits_pch1$P_rent_90_99 + bg_limits_pch1$Pch_own_79 + bg_limits_pch1$P_own_79_early + bg_limits_pch1$Pch_own_80_89 + bg_limits_pch1$P_own_80_89 + bg_limits_pch1$Pch_own_90_99 + bg_limits_pch1$P_own_90_99 
+
+model1DRI <- glm(formula = formula.DRI, family = "gaussian", data = dataset_id_avg)
+resid.glm1DRI <- residuals(model1DRI)
+summary(model1DRI)$coefficients
+summary(model1DRI)$dispersion
+moran.mc(x = resid.glm1DRI[1:316], listw = nb.list, nsim = 10000)
+
+chain1.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.DRI)
+summary(chain1.DRI)
+summary(chain1.DRI$samples)
+summary(chain1.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain1.DRI$samples$beta)
+
+chain2.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.DRI)
+summary(chain2.DRI)
+summary(chain2.DRI$samples)
+summary(chain2.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain2.DRI$samples$beta)
+
+chain3.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_pch1, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.DRI)
+summary(chain3.DRI)
+summary(chain3.DRI$samples)
+summary(chain3.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain3.DRI$samples$beta)
+
+beta.samples <- mcmc.list(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+# Beltline
+formula.DRI <- bg_Atl_pch1$Index_DR ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$Pch_rent_white + bg_Atl_pch1$Pch_rent_black+ bg_Atl_pch1$Pch_rent_aian + bg_Atl_pch1$Pch_rent_asian + bg_Atl_pch1$Pch_rent_hispanic + bg_Atl_pch1$Pch_own_white + bg_Atl_pch1$Pch_own_black + bg_Atl_pch1$Pch_own_aian+ bg_Atl_pch1$Pch_own_asian + bg_Atl_pch1$Pch_own_nhpi + bg_Atl_pch1$Pch_own_hispanic + bg_Atl_pch1$Pch_rent_79 + bg_Atl_pch1$Pch_rent_80_89 + bg_Atl_pch1$Pch_rent_90_99 + bg_Atl_pch1$Pch_own_79 + bg_Atl_pch1$Pch_own_80_89 + bg_Atl_pch1$Pch_own_90_99 
+
+model1DRI <- glm(formula = formula.DRI, family = "gaussian", data = bg_Atl)
+resid.glm1DRI <- residuals(model1DRI)
+summary(model1DRI)$coefficients
+summary(model1DRI)$dispersion
+moran.mc(x = resid.glm1DRI[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.DRI)
+summary(chain1.DRI)
+summary(chain1.DRI$samples)
+summary(chain1.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain1.DRI$samples$beta)
+
+chain2.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.DRI)
+summary(chain2.DRI)
+summary(chain2.DRI$samples)
+summary(chain2.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain2.DRI$samples$beta)
+
+chain3.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.DRI)
+summary(chain3.DRI)
+summary(chain3.DRI$samples)
+summary(chain3.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain3.DRI$samples$beta)
+
+beta.samples <- mcmc.list(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.DRI <- bg_Atl_pch1$Index_DR ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$P_rent_white + bg_Atl_pch1$P_rent_black+ bg_Atl_pch1$P_rent_aian + bg_Atl_pch1$P_rent_asian + bg_Atl_pch1$P_rent_hispanic + bg_Atl_pch1$P_own_white + bg_Atl_pch1$P_own_black + bg_Atl_pch1$P_own_aian+ bg_Atl_pch1$P_own_asian + bg_Atl_pch1$P_own_nhpi + bg_Atl_pch1$P_own_hispanic + bg_Atl_pch1$P_rent_79 + bg_Atl_pch1$P_rent_80_89 + bg_Atl_pch1$P_rent_90_99 + bg_Atl_pch1$P_own_79 + bg_Atl_pch1$P_own_80_89 + bg_Atl_pch1$P_own_90_99 
+
+model1DRI <- glm(formula = formula.DRI, family = "gaussian", data = bg_Atl)
+resid.glm1DRI <- residuals(model1DRI)
+summary(model1DRI)$coefficients
+summary(model1DRI)$dispersion
+moran.mc(x = resid.glm1DRI[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.DRI)
+summary(chain1.DRI)
+summary(chain1.DRI$samples)
+summary(chain1.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain1.DRI$samples$beta)
+
+chain2.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.DRI)
+summary(chain2.DRI)
+summary(chain2.DRI$samples)
+summary(chain2.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain2.DRI$samples$beta)
+
+chain3.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.DRI)
+summary(chain3.DRI)
+summary(chain3.DRI$samples)
+summary(chain3.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain3.DRI$samples$beta)
+
+beta.samples <- mcmc.list(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+
+formula.DRI <- bg_Atl_pch1$Index_DR ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$Pch_rent_white + bg_Atl_pch1$P_rent_white + bg_Atl_pch1$Pch_rent_black + bg_Atl_pch1$P_rent_black + bg_Atl_pch1$Pch_rent_aian + bg_Atl_pch1$P_rent_aian + bg_Atl_pch1$Pch_rent_asian + bg_Atl_pch1$P_rent_asian + bg_Atl_pch1$Pch_rent_nhpi + bg_Atl_pch1$P_rent_nhpi + bg_Atl_pch1$Pch_rent_hispanic + bg_Atl_pch1$P_rent_hispanic + bg_Atl_pch1$Pch_own_white + bg_Atl_pch1$P_own_white + bg_Atl_pch1$Pch_own_black + bg_Atl_pch1$P_own_black  + bg_Atl_pch1$Pch_own_aian + bg_Atl_pch1$P_own_aian + bg_Atl_pch1$Pch_own_asian + bg_Atl_pch1$P_own_asian  + bg_Atl_pch1$Pch_own_nhpi + bg_Atl_pch1$P_own_nhpi + bg_Atl_pch1$Pch_own_hispanic + bg_Atl_pch1$P_own_hispanic + bg_Atl_pch1$Pch_rent_79 + bg_Atl_pch1$P_rent_79 + bg_Atl_pch1$Pch_rent_80_89 + bg_Atl_pch1$P_rent_80_89 + bg_Atl_pch1$Pch_rent_90_99 + bg_Atl_pch1$P_rent_90_99 + bg_Atl_pch1$Pch_own_79 + bg_Atl_pch1$P_own_79 + bg_Atl_pch1$Pch_own_80_89 + bg_Atl_pch1$P_own_80_89 + bg_Atl_pch1$Pch_own_90_99 + bg_Atl_pch1$P_own_90_99 
+
+model1DRI <- glm(formula = formula.DRI, family = "gaussian", data = bg_Atl)
+resid.glm1DRI <- residuals(model1DRI)
+summary(model1DRI)$coefficients
+summary(model1DRI)$dispersion
+moran.mc(x = resid.glm1DRI[1:87], listw = nbg.list, nsim = 10000)
+
+chain1.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.DRI)
+summary(chain1.DRI)
+summary(chain1.DRI$samples)
+summary(chain1.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain1.DRI$samples$beta)
+
+chain2.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.DRI)
+summary(chain2.DRI)
+summary(chain2.DRI$samples)
+summary(chain2.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain2.DRI$samples$beta)
+
+chain3.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.DRI)
+summary(chain3.DRI)
+summary(chain3.DRI$samples)
+summary(chain3.DRI$samples$beta)
+# According to the plot there was convergence
+plot(chain3.DRI$samples$beta)
+
+beta.samples <- mcmc.list(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+```
+
+```{r displacement risk predictive validity, echo=FALSE}
+formula.DRI <- bg_limits_tenure$Index_DR ~ bg_limits_tenure$P_rent_white + bg_limits_tenure$P_rent_black+ bg_limits_tenure$P_rent_aian + bg_limits_tenure$P_rent_asian + bg_limits_tenure$P_rent_nhpi + bg_limits_tenure$P_rent_hispanic + bg_limits_tenure$P_own_white + bg_limits_tenure$P_own_black + bg_limits_tenure$P_own_aian+ bg_limits_tenure$P_own_asian + bg_limits_tenure$P_own_nhpi + bg_limits_tenure$P_own_hispanic
+
+model1DRI <- glm(formula = formula.DRI, family = "gaussian", data = dataset_id_avg)
+resid.glm1DRI <- residuals(model1DRI)
+summary(model1DRI)$coefficients
+summary(model1DRI)$dispersion
+moran.mc(x = resid.glm1DRI[1:186], listw = nb.list, nsim = 10000)
+
+chain1.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_tenure, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain1.DRI)
+summary(chain1.DRI)
+summary(chain1.DRI$samples)
+summary(chain1.DRI$samples$beta)
+summary(chain1.DRI$samples$Y)
+# According to the plot there was convergence
+plot(chain1.DRI$samples$beta)
+
+chain2.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_tenure, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain2.DRI)
+summary(chain2.DRI)
+summary(chain2.DRI$samples)
+summary(chain2.DRI$samples$beta)
+summary(chain2.DRI$samples$Y)
+# According to the plot there was convergence
+plot(chain2.DRI$samples$beta)
+
+chain3.DRI <- ST.CARar(formula = formula.DRI, family ="gaussian", data=bg_limits_tenure, W=W, burnin=20000, n.sample=220000, thin=100, AR=1)
+print(chain3.DRI)
+summary(chain3.DRI)
+summary(chain3.DRI$samples)
+summary(chain3.DRI$samples$beta)
+summary(chain1.DRI$samples$Y)
+# According to the plot there was convergence
+plot(chain3.DRI$samples$beta)
+
+beta.samples <- mcmc.list(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+plot(beta.samples)
+# Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+gelman.diag(beta.samples)
+beta.samples.matrix <- rbind(chain1.DRI$samples$beta, chain2.DRI$samples$beta, chain3.DRI$samples$beta)
+Y.samples.matrix <- rbind(chain1.DRI$samples$Y, chain2.DRI$samples$Y, chain3.DRI$samples$Y)
+round(t(rbind(apply(beta.samples.matrix, 2, mean), apply(beta.samples.matrix, 2, quantile, c(0.025, 0.975)))), 5)
+
+# # Beltline block groups
+# formula.DRI_belt <- bg_Atl_pch1$Index_DR ~ bg_Atl_pch1$Completed + bg_Atl_pch1$Slated + bg_Atl_pch1$P_rent_white + bg_Atl_pch1$P_rent_black+ bg_Atl_pch1$P_rent_aian + bg_Atl_pch1$P_rent_asian + bg_Atl_pch1$Pch_rent_nhpi ++ bg_Atl_pch1$P_rent_hispanic + bg_Atl_pch1$P_own_white + bg_Atl_pch1$P_own_black + bg_Atl_pch1$P_own_aian+ bg_Atl_pch1$P_own_asian + bg_Atl_pch1$P_own_nhpi + bg_Atl_pch1$P_own_hispanic
+# 
+# model1DRI_belt <- glm(formula = formula.DRI_belt, family = "gaussian", data = bg_Atl)
+# resid.glm1DRI_belt <- residuals(model1DRI_belt)
+# summary(model1DRI_belt)$coefficients
+# summary(model1DRI_belt)$dispersion
+# moran.mc(x = resid.glm1DRI_belt[1:87], listw = nbg.list, nsim = 10000)
+# 
+# chain1.DRI_belt <- ST.CARar(formula = formula.DRI_belt, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain1.DRI_belt)
+# summary(chain1.DRI_belt)
+# summary(chain1.DRI_belt$samples)
+# summary(chain1.DRI_belt$samples$beta)
+# summary(chain1.DRI_belt$samples$Y)
+# # According to the plot there was convergence
+# plot(chain1.DRI_belt$samples$beta)
+# 
+# chain2.DRI_belt <- ST.CARar(formula = formula.DRI_belt, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain2.DRI_belt)
+# summary(chain2.DRI_belt)
+# summary(chain2.DRI_belt$samples)
+# summary(chain2.DRI_belt$samples$beta)
+# summary(chain2.DRI_belt$samples$Y)
+# # According to the plot there was convergence
+# plot(chain2.DRI_belt$samples$beta)
+# 
+# chain3.DRI_belt <- ST.CARar(formula = formula.DRI_belt, family ="gaussian", data=bg_Atl_pch1, W=Wg, burnin=20000, n.sample=220000, thin=100, AR=1)
+# print(chain3.DRI_belt)
+# summary(chain3.DRI_belt)
+# summary(chain3.DRI_belt$samples)
+# summary(chain3.DRI_belt$samples$beta)
+# summary(chain1.DRI_belt$samples$Y)
+# # According to the plot there was convergence
+# plot(chain3.DRI_belt$samples$beta)
+# 
+# beta.samples_belt <- mcmc.list(chain1.DRI_belt$samples$beta, chain2.DRI_belt$samples$beta, chain3.DRI_belt$samples$beta)
+# plot(beta.samples_belt)
+# # Diagnostic: Potential Scale Reduction Factor (PSRF) -> value < 1.1 is suggestive of convergence.
+# gelman.diag(beta.samples_belt)
+# beta.samples.matrix_belt <- rbind(chain1.DRI_belt$samples$beta, chain2.DRI_belt$samples$beta, chain3.DRI_belt$samples$beta)
+# Y.samples.matrix_belt <- rbind(chain1.DRI_belt$samples$Y, chain2.DRI_belt$samples$Y, chain3.DRI_belt$samples$Y)
+# round(t(rbind(apply(beta.samples.matrix_belt, 2, mean), apply(beta.samples.matrix_belt, 2, quantile, c(0.025, 0.975)))), 5)
+```
+# Local Indicators of Spatial Autocorrelation for DRI (2000, 2007-2011, 2012-2016)
+
+```{r LISA, echo=FALSE}
+# Joining GR to Index data 
+DRI <- left_join(dataset_combined, dataset_green, by = c("GEOID" = "GEOID", "S_Year" = "Year"))
+DRI <- DRI[!DRI$GEOID == "131219800001",]
+# Joining the new information to the spatial polygon data
+DRI <- left_join(DRI, bg_limits_belt, by = c("GEOID" = "GEOID"))
+# Subset the data by each timeframe
+DRI_00 <- subset(DRI, S_Year == "2000")
+DRI_11 <- subset(DRI, S_Year == "2011")
+DRI_16 <- subset(DRI, S_Year == "2016")
+
+# Neighborhood matrix
+nb_lisa_00 <- poly2nb(DRI_00$geometry, row.names = rownames(DRI_00$GEOID), queen = TRUE)
+nb_lisa_11 <- poly2nb(DRI_11$geometry, row.names = rownames(DRI_11$GEOID), queen = TRUE)
+nb_lisa_16 <- poly2nb(DRI_16$geometry, row.names = rownames(DRI_16$GEOID), queen = TRUE)
+print(nb_lisa_00)
+print(nb_lisa_11)
+print(nb_lisa_16)
+# There is a region with no neighbors (output #119 = 131219800001; it looks like it is the airport)
+# The zero.policy = TRUE accounts for regions with no neighbors found
+# style = W means row standardized spatial weights matrix to ensure the sum of the values across each row add up to 1 (spatial influence of one neighborhood on the other depends on how many other neighbors it has; averaging of neighboring values) vs. style = B is just a binary informing whether there is a neighbor
+nb.list_lisa_00 <- nb2listw(nb_lisa_00, style = "W", zero.policy = TRUE)
+nb.list_lisa_11 <- nb2listw(nb_lisa_11, style = "W", zero.policy = TRUE)
+nb.list_lisa_16 <- nb2listw(nb_lisa_16, style = "W", zero.policy = TRUE)
+W_00 <- nb2mat(nb_lisa_00, style = "B", zero.policy = TRUE)
+W_11 <- nb2mat(nb_lisa_11, style = "B", zero.policy = TRUE)
+W_16 <- nb2mat(nb_lisa_16, style = "B", zero.policy = TRUE)
+
+# Positively autocorrelated
+globalMoran_00 <- moran.test(DRI_00$Index_DR, nb.list_lisa_00)
+globalMoran_11 <- moran.test(DRI_11$Index_DR, nb.list_lisa_11)
+globalMoran_16 <- moran.test(DRI_16$Index_DR, nb.list_lisa_16)
+globalMoran_00
+globalMoran_11
+globalMoran_16
+
+# Moran scatterplot
+moran_lisa_00 <- moran.plot(DRI_00$Index_DR, nb.list_lisa_00)
+moran_lisa_11 <- moran.plot(DRI_11$Index_DR, nb.list_lisa_11)
+moran_lisa_16 <- moran.plot(DRI_16$Index_DR, nb.list_lisa_16)
+
+# Compute local Moran
+# Ii = local moran statistics
+# E.li = expectation of local mean statistic
+# Var.Ii = variance of local moran statistic
+# Z.li = standard deviate of local moran statistic
+# Pr() = p-value of local moran statistic
+local_lisa_00 <- localmoran(DRI_00$Index_DR, nb.list_lisa_00)
+local_lisa_11 <- localmoran(DRI_11$Index_DR, nb.list_lisa_11)
+local_lisa_16 <- localmoran(DRI_16$Index_DR, nb.list_lisa_16)
+
+# Plot local Moran
+moran.map_lisa_00 <- cbind(DRI_00$Index_DR, local_lisa_00)
+moran.map_lisa_11 <- cbind(DRI_11$Index_DR, local_lisa_11)
+moran.map_lisa_16 <- cbind(DRI_16$Index_DR, local_lisa_16)
+moran.map_lisa_00 <- as.data.frame(moran.map_lisa_00)
+moran.map_lisa_11 <- as.data.frame(moran.map_lisa_11)
+moran.map_lisa_16 <- as.data.frame(moran.map_lisa_16)
+
+DRI_li_00 <- left_join(DRI_00, moran.map_lisa_00, by = c("Index_DR" = "V1"))
+DRI_li_11 <- left_join(DRI_11, moran.map_lisa_11, by = c("Index_DR" = "V1"))
+DRI_li_16 <- left_join(DRI_16, moran.map_lisa_16, by = c("Index_DR" = "V1"))
+
+DRI_li_sf_00 <- st_as_sf(DRI_li_00)
+DRI_li_sf_11 <- st_as_sf(DRI_li_11)
+DRI_li_sf_16 <- st_as_sf(DRI_li_16)
+
+tm_shape(DRI_li_sf_00)+
+  tm_fill(col = "Ii", # local moran statistic
+          style = "quantile",
+          title = "DRI Local Moran Statistic - 2000")
+tm_shape(DRI_li_sf_11)+
+  tm_fill(col = "Ii", # local moran statistic
+          style = "quantile",
+          title = "DRI Local Moran Statistic - 2011")
+tm_shape(DRI_li_sf_16)+
+  tm_fill(col = "Ii", # local moran statistic
+          style = "quantile",
+          title = "DRI Local Moran Statistic - 2016")
+
+## Plot LISA clusters
+quadrant_00 <- vector(mode = "numeric", length = nrow(local_lisa_00))
+quadrant_11 <- vector(mode = "numeric", length = nrow(local_lisa_11))
+quadrant_16 <- vector(mode = "numeric", length = nrow(local_lisa_16))
+# centers the variable around its mean
+m.DRI_00 <- DRI_00$Index_DR - mean(DRI_00$Index_DR)
+m.DRI_11 <- DRI_11$Index_DR - mean(DRI_11$Index_DR)
+m.DRI_16 <- DRI_16$Index_DR - mean(DRI_16$Index_DR)
+# centers the local Moran's around the mean
+m.local_00 <- local_lisa_00[,1] - mean(local_lisa_00[,1])
+m.local_11 <- local_lisa_11[,1] - mean(local_lisa_11[,1])
+m.local_16 <- local_lisa_16[,1] - mean(local_lisa_16[,1])
+# significance threshold
+signif <- 0.05
+# builds a data quandrant
+quadrant_00[m.DRI_00 >0 & m.local_00>0] <- 4
+quadrant_00[m.DRI_00 <0 & m.local_00<0] <- 1
+quadrant_00[m.DRI_00 <0 & m.local_00>0] <- 2
+quadrant_00[m.DRI_00 >0 & m.local_00<0] <- 3
+quadrant_00[local_lisa_00[,5]>signif] <- 0
+quadrant_00 <- as.data.frame(quadrant_00)
+quadrant_00_sf <- cbind(bg_limits_belt,quadrant_00)
+
+quadrant_11[m.DRI_11 >0 & m.local_11>0] <- 4
+quadrant_11[m.DRI_11 <0 & m.local_11<0] <- 1
+quadrant_11[m.DRI_11 <0 & m.local_11>0] <- 2
+quadrant_11[m.DRI_11 >0 & m.local_11<0] <- 3
+quadrant_11[local_lisa_11[,5]>signif] <- 0
+quadrant_11 <- as.data.frame(quadrant_11)
+quadrant_11_sf <- cbind(bg_limits_belt,quadrant_11)
+
+quadrant_16[m.DRI_16 >0 & m.local_16>0] <- 4
+quadrant_16[m.DRI_16 <0 & m.local_16<0] <- 1
+quadrant_16[m.DRI_16 <0 & m.local_16>0] <- 2
+quadrant_16[m.DRI_16 >0 & m.local_16<0] <- 3
+quadrant_16[local_lisa_16[,5]>signif] <- 0
+quadrant_16 <- as.data.frame(quadrant_16)
+quadrant_16_sf <- cbind(bg_limits_belt,quadrant_16)
+
+#plot
+# quadrant_breaks <- c(0,1,2,3,4)
+# colors <- c("white","blue",rgb(0,0,1,alpha=0.4),rgb(1,0,0,alpha=0.4),"red")
+# plot(DRI_00$geometry, border="lightgray", col = colors[findInterval(quadrant_00, quadrant_breaks,all.inside = FALSE)])+
+#   legend("bottomright", legend = c("insignificant","low-low","low-high","high-low","high-high"), fill = colors, bty = "n")
+
+completed_0711_sf <- st_as_sf(left_join(completed_0711, bg_limits_belt)) %>% 
+  mutate(Parks_Trails = as.character(case_when(Slated ==1 ~ "Slated (2012-2016)",
+                                               Completed == 1 ~ "Completed")))
+
+completed_1216_sf <- st_as_sf(left_join(completed_1216, bg_limits_belt)) %>% 
+  filter(!Year=="2021") %>% 
+  mutate(Parks_Trails = as.character(case_when(Slated ==1 ~ "Slated (2017-2019)",
+                                               Completed == 1 ~ "Completed")))
+
+ATL_DR_00<-ggplot()+
+  geom_sf(data=quadrant_00_sf, aes(fill = as.character(quadrant_00), color = as.character(quadrant_00)), show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+  scale_color_manual(values = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c"), 
+                     name = "Local Indicators of Spatial \nAssociation (LISA) Index",
+                     labels = c("Insignificant (p>0.05)","Low-Low","Low-High","High-Low","High-High"))+
+  scale_fill_manual(values = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c"))+
+  ggtitle(label = "2000")+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 4, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"), legend.position = "none", plot.title = element_text(hjust = 0.5, size = 18), 
+        axis.text = element_text(size = 10))
+
+ATL_DR_11<-ggplot()+
+  geom_sf(data=quadrant_11_sf, aes(fill = as.character(quadrant_11), color = as.character(quadrant_11)), show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+  geom_sf(data= completed_0711_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linetype = "solid", linewidth = 1.35, fill=NA)+
+  scale_color_manual(values = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c","#ffae42","#33a02c"), 
+                     name = "Local Indicators of Spatial \nAssociation (LISA) Index",
+                     labels = c("Insignificant (p>0.05)","Low-Low","Low-High","High-Low","High-High", "Completed GR Projects","Slated GR Projects \n(2012-2016 or 2017-2019)"))+
+  scale_fill_manual(values = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c"))+
+  ggtitle(label = "2007-2011")+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 4, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"), legend.position = "bottom", legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12), plot.title = element_text(hjust = 0.5, size = 18), axis.text = element_text(size = 10), legend.box.spacing = unit(1.0, "cm"))+
+  guides(color = guide_legend(override.aes = list(color = c(NA,NA,NA,NA,NA,"#ffae42","#33a02c"),
+                                                  fill = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c","white","white"),
+                                                  linetype = c("solid"))))
+
+ATL_DR_16<-ggplot()+
+  geom_sf(data=quadrant_16_sf, aes(fill = as.character(quadrant_16), color = as.character(quadrant_16)), show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+  geom_sf(data= completed_1216_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linetype = "solid", linewidth = 1.35, fill=NA)+
+  scale_color_manual(values = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c","#ffae42","#33a02c"), 
+                     name = "Local Indicators of Spatial \nAssociation (LISA) Index",
+                     labels = c("Insignificant (p>0.05)","Low-Low","Low-High","High-Low","High-High", "Completed GR Projects","Slated GR Projects \n(2012-2016 or 2017-2019)"))+
+  scale_fill_manual(values = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c"))+
+  ggtitle(label = "2012-2016")+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 4, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"), legend.position = "none", legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12), plot.title = element_text(hjust = 0.5, size = 18), axis.text = element_text(size = 10))+
+  guides(color = guide_legend(override.aes = list(color = c(NA,NA,NA,NA,NA,"#ffae42","#33a02c"),
+                                                  fill = c("#f0f0f0","#1f78b4","#a6cee3","#fb9a99","#e31a1c","white","white"),
+                                                  linetype = c("solid"))))
+
+ATL_DR_00 + ATL_DR_11 + ATL_DR_16+
+  plot_layout(ncol = 3, nrow = 1) &
+  theme(plot.title = element_text(hjust = 0.5), panel.grid.major = element_line(colour = "transparent"), plot.margin = unit(c(0.5,0.5,0.5,0.5,0.5,0.5), "cm"))
+
+# ggsave("F1_LISA_DR.tiff", width = 22, height = 10, dpi = 150)
+# ggsave("F1_LISA_DR.png", width = 22, height = 10, dpi = 150)
+#   
+```
+
