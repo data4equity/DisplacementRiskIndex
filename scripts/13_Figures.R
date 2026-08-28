@@ -437,7 +437,11 @@ traj_map_fig <- function(traj_col, title, fig_name, beltline_only = FALSE,
               colour = "gray30", alpha = 0.3)} +
     {if (!beltline_only)
       geom_sf(data = city_outline, color = "gray40", fill = NA)} +
-    geom_sf(data = expr_city, color = col_interstate, linewidth = 0.35) +
+    # interstates only on the citywide maps: the citywide lines would stretch
+    # BeltLine-only facets out to the full city extent (the original BeltLine
+    # facet figures carry no interstate layer)
+    {if (!beltline_only)
+      geom_sf(data = expr_city, color = col_interstate, linewidth = 0.35)} +
     scale_color_manual(values = pal_paired, drop = FALSE) +
     scale_fill_manual(values = pal_paired, drop = FALSE) +
     ggtitle(title) +
