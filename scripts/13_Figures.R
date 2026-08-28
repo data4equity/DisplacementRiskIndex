@@ -5,12 +5,14 @@
 # flag (block-group centroid within the 10 subareas; see 02_GEOS.R). Figures are
 # written to outputs/figures_2026/ as PNG and 300-dpi TIFF (LZW).
 #
+# Styling: Figures 1 and 6-17 reproduce the manuscript's ORIGINAL visual
+# language (RdBu index fills, Pastel1 categories, ColorBrewer Paired trajectory
+# palette, default-hue alluvials and densities, composite + facet trajectory
+# layouts) with the data updated. Figures 2-5 (new design, no original existed)
+# and Figure 18 keep the 2026 treatment.
 # Differences from the original 09_Visualizations.Rmd / 10_DRI_Analyses.Rmd:
 #  - all index values, categories, and trajectories are the pooled versions,
 #    comparable across 2000, 2007-2011, and 2012-2016;
-#  - continuous fills use a single-hue sequential ramp (the original used the
-#    diverging RdBu for a magnitude); ordinal categories use a light-to-dark
-#    ramp of the same hue (the original used Pastel1);
 #  - LISA clusters use the standard Anselin quadrants (value vs. mean crossed
 #    with the SPATIAL LAG vs. mean). The original quadrant code centered the
 #    local Moran statistic on its own mean and its Low-Low / Low-High labels
@@ -42,18 +44,22 @@ save_fig <- function(plot, name, width, height) {
   cat("wrote", name, "\n")
 }
 
-# ---- palettes (validated with the dataviz palette checker) --------------------
-pal_cat  <- c(Low = "#d5e3df", Moderate = "#4f9b94", High = "#15494A")
-pal_traj <- c("Persistently High" = "#15494A", "Persistently Moderate" = "#4f9b94",
-              "Persistently Low" = "#d5e3df", "Increasing" = "#B85B33",
-              "Decreasing" = "#3f6fb5", "Fluctuating" = "#c9c2b4")
+# ---- palettes -----------------------------------------------------------------
+# Original manuscript palette: ColorBrewer Paired, in trajectory factor order.
+pal_paired <- c("#a6cee3", "#1f78b4", "#b2df8a", "#33a02c", "#fb9a99", "#e31a1c")
 pal_lisa <- c("High-High" = "#e31a1c", "High-Low" = "#fb9a99",
               "Low-High" = "#a6cee3", "Low-Low" = "#1f78b4",
               "Not significant" = "#f0f0f0")
-ramp_low  <- "#eef4f2"; ramp_high <- "#123f40"
-col_completed <- "#e08214"; col_slated <- "#33a02c"
-col_belt <- "#4f9b94"; col_notbelt <- "#f5f1e6"
+col_completed <- "#ffae42"; col_slated <- "#33a02c"   # original GR overlay colors
+col_belt_green <- "forestgreen"                        # original Figure 1 green
+col_interstate <- "navy"
 
+# original map theme: theme_minimal with graticule labels kept
+theme_map_orig <- theme_minimal(base_size = 11) +
+  theme(axis.title = element_blank(),
+        panel.grid.major = element_line(colour = "transparent"),
+        plot.title = element_text(hjust = 0.5))
+# clean theme used by Figure 18 (kept from the 2026 treatment she approved)
 theme_map <- theme_minimal(base_size = 11) +
   theme(axis.title = element_blank(), axis.text = element_blank(),
         panel.grid = element_blank(), plot.title = element_text(hjust = 0.5))
@@ -71,6 +77,11 @@ bg$belt_flag <- ifelse(
 bg316 <- bg %>% filter(GEOID != "131219800001")
 sub_outline <- st_transform(st_union(sub_p), st_crs(bg))
 city_outline <- st_union(bg316)
+belt_footprint <- st_union(bg316 %>% filter(belt_flag == "BeltLine"))
+expr_city <- st_read("data_raw/Expressways highways/Expressways_Atlanta_Region.shp",
+                     quiet = TRUE) %>%
+  st_transform(st_crs(bg)) %>%
+  st_intersection(st_buffer(city_outline, 0.01))
 
 # ---- pooled index data --------------------------------------------------------
 pooled <- read_csv("outputs/DRI_pooled_dataset.csv", show_col_types = FALSE) %>%
@@ -96,7 +107,8 @@ classify_traj <- function(c00, c11, c16) {
   if (all(d <= 0)) return("Decreasing")
   "Fluctuating"
 }
-traj_levels <- names(pal_traj)
+traj_levels <- c("Persistently High", "Persistently Moderate", "Persistently Low",
+                 "Increasing", "Decreasing", "Fluctuating")
 
 wide <- wide %>% rowwise() %>%
   mutate(Vuln_Traj  = classify_traj(Vuln_Cat_pooled_2000, Vuln_Cat_pooled_2011, Vuln_Cat_pooled_2016),
@@ -140,29 +152,39 @@ green_1216 <- overlay_sf(completed_1216_ids, slated_1216_ids, "Slated")
 pal_green <- c(Completed = col_completed, Slated = col_slated)
 
 scalebar_layer <- annotation_scale(location = "bl", width_hint = 0.25,
-                                   height = unit(0.15, "cm"), text_cex = 0.6)
+                                   height = unit(0.15, "cm"), text_cex = 0.6,
+                                   unit_category = "imperial")
 
 # ==============================================================================
-# Figure 1 - study area
+# Figure 1 - study area (original two-panel style: subarea footprint, then
+# targeted block groups, both forest green with navy interstates)
 # ==============================================================================
 if (want(1)) {
-  expr <- st_read("data_raw/Expressways highways/Expressways_Atlanta_Region.shp",
-                  quiet = TRUE) %>% st_transform(st_crs(bg))
-  expr_city <- st_intersection(expr, st_buffer(city_outline, 0.01))
   expr_lab <- expr_city %>% filter(!is.na(Label)) %>%
     group_by(Label) %>% slice(1) %>% ungroup()
 
-  f1 <- ggplot() +
-    geom_sf(data = bg316, aes(fill = belt_flag), color = "gray65", linewidth = 0.15) +
-    scale_fill_manual(values = c("BeltLine" = col_belt, "Not BeltLine" = col_notbelt),
-                      name = "Block groups") +
-    geom_sf(data = sub_outline, fill = NA, color = "#22302e", linewidth = 0.7) +
-    geom_sf(data = expr_city, color = "gray25", linewidth = 0.45) +
-    geom_sf_label(data = expr_lab, aes(label = Label), size = 2.4,
-                  label.padding = unit(0.12, "lines"), alpha = 0.85) +
-    scalebar_layer + theme_map +
-    labs(caption = "Dark outline: the 10 BeltLine subareas. Targeted block groups (n = 91): centroid within the subareas.")
-  save_fig(f1, "Fig01_StudyArea", 7.5, 8)
+  f1_left <- ggplot() +
+    geom_sf(data = city_outline, fill = NA, color = "gray40", linewidth = 0.3) +
+    geom_sf(data = st_make_valid(st_transform(subareas, st_crs(bg))),
+            fill = col_belt_green, color = col_belt_green) +
+    geom_sf(data = expr_city, color = col_interstate, linewidth = 0.5) +
+    geom_sf_label(data = expr_lab, aes(label = Label), size = 2.6,
+                  label.padding = unit(0.14, "lines")) +
+    ggtitle("City of Atlanta and Atlanta BeltLine Boundaries") +
+    scalebar_layer + coord_sf(default_crs = sf::st_crs(4269)) + theme_map_orig
+
+  f1_right <- ggplot() +
+    geom_sf(data = bg316, fill = NA, color = "gray70", linewidth = 0.15) +
+    geom_sf(data = bg316 %>% filter(belt_flag == "BeltLine"),
+            fill = col_belt_green, color = "gray85", linewidth = 0.15) +
+    geom_sf(data = expr_city, color = col_interstate, linewidth = 0.5) +
+    geom_sf_label(data = expr_lab, aes(label = Label), size = 2.6,
+                  label.padding = unit(0.14, "lines")) +
+    ggtitle("Targeted vs. Non-Targeted Block Groups") +
+    scalebar_layer + coord_sf(default_crs = sf::st_crs(4269)) + theme_map_orig
+
+  f1 <- f1_left + f1_right
+  save_fig(f1, "Fig01_StudyArea", 13, 7.5)
 }
 
 # ==============================================================================
@@ -265,58 +287,66 @@ if (want(2) || want(3) || want(4) || want(5)) {
 # Figure 6 - index distributions, targeted vs non-targeted, by period
 # ==============================================================================
 if (want(6)) {
+  # Original style: theme_classic line densities, default hue pair, six panels
   dist_d <- pooled %>%
-    left_join(st_drop_geometry(bg316) %>% select(GEOID, flag2 = belt_flag), by = "GEOID") %>%
-    select(GEOID, S_Year, flag2, Vulnerability = Index_Vuln_pooled,
-           `Housing market` = Index_Housing_pooled) %>%
-    pivot_longer(c(Vulnerability, `Housing market`),
-                 names_to = "index", values_to = "value") %>%
-    mutate(Period = factor(period_lab[as.character(S_Year)], levels = period_lab),
-           index = factor(index, levels = c("Vulnerability", "Housing market")))
+    left_join(st_drop_geometry(bg316) %>% select(GEOID, flag2 = belt_flag), by = "GEOID")
 
-  f6 <- ggplot(dist_d, aes(value, fill = flag2, color = flag2)) +
-    geom_density(alpha = 0.35, linewidth = 0.6) +
-    facet_grid(index ~ Period, scales = "free") +
-    scale_fill_manual(values = c("BeltLine" = "#15494A", "Not BeltLine" = "#D4A03C"),
-                      name = NULL) +
-    scale_color_manual(values = c("BeltLine" = "#15494A", "Not BeltLine" = "#a87718"),
-                       name = NULL) +
-    labs(x = "Pooled index value", y = "Density") +
-    theme_minimal(base_size = 11) +
-    theme(legend.position = "bottom", panel.grid.minor = element_blank())
-  save_fig(f6, "Fig06_Index_Distributions", 10, 6)
+  dens_panel <- function(yr, var, xlab, xlim, title = NULL) {
+    p <- ggplot(dist_d %>% filter(S_Year == yr)) +
+      geom_density(aes(x = .data[[var]], colour = flag2)) +
+      lims(x = xlim) +
+      labs(x = xlab, colour = "Location") +
+      theme_classic() +
+      theme(legend.position = "bottom")
+    if (!is.null(title))
+      p <- p + ggtitle(title) + theme(plot.title = element_text(hjust = 0.5))
+    p
+  }
+  f6 <- dens_panel(2000, "Index_Vuln_pooled", "Vulnerability Index", c(0, 700), "2000") +
+    dens_panel(2011, "Index_Vuln_pooled", "Vulnerability Index", c(0, 700), "2007 - 2011") +
+    dens_panel(2016, "Index_Vuln_pooled", "Vulnerability Index", c(0, 700), "2012 - 2016") +
+    dens_panel(2000, "Index_Housing_pooled", "Housing Market Index", c(150, 700)) +
+    dens_panel(2011, "Index_Housing_pooled", "Housing Market Index", c(150, 700)) +
+    dens_panel(2016, "Index_Housing_pooled", "Housing Market Index", c(150, 700)) +
+    plot_layout(ncol = 3, nrow = 2, guides = "collect") &
+    theme(legend.position = "bottom", legend.title = element_blank())
+  save_fig(f6, "Fig06_Index_Distributions", 12, 6.5)
 }
 
 # ==============================================================================
 # Figures 7, 8, 15 - BeltLine index maps (values + categories) over time
 # ==============================================================================
-index_map_fig <- function(idx_prefix, cat_prefix, legend_title, fig_name) {
-  vals <- st_drop_geometry(belt_map) %>%
-    select(starts_with(paste0(idx_prefix, "_pooled_"))) %>% as.matrix()
-  lim <- c(0, ceiling(max(vals, na.rm = TRUE) / 100) * 100)
-
+# Original style: top row RdBu index values with fixed breaks and
+# Lowest/Highest labels; bottom row Pastel1 categories; mile scale bars.
+index_map_fig <- function(idx_prefix, cat_prefix, legend_title, cat_title,
+                          lim, brks, brk_labs, fig_name) {
   panel_val <- function(yr, overlay = NULL, show_legend = FALSE) {
     p <- ggplot() +
       geom_sf(data = belt_map,
               aes(fill = .data[[paste0(idx_prefix, "_pooled_", yr)]]),
-              color = "gray60", linewidth = 0.15) +
-      scale_fill_gradient(low = ramp_low, high = ramp_high, limits = lim,
-                          name = legend_title)
+              color = "gray60") +
+      scale_fill_distiller(palette = "RdBu", breaks = brks, labels = brk_labs,
+                           limits = lim, name = legend_title)
     if (!is.null(overlay))
       p <- p + geom_sf(data = overlay, aes(color = Parks_Trails), fill = NA,
-                       linewidth = 0.9) +
-        scale_color_manual(values = pal_green, name = "Park and trail\nimprovements")
-    p + ggtitle(period_lab[as.character(yr)]) + scalebar_layer + theme_map +
+                       linewidth = 1.1) +
+        scale_color_manual(values = pal_green,
+                           name = "Park and Trail \nImprovements")
+    p + ggtitle(period_lab[as.character(yr)]) + scalebar_layer +
+      coord_sf(default_crs = sf::st_crs(4269)) +
+      scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34)) +
+      theme_map_orig +
       theme(legend.position = if (show_legend) "right" else "none")
   }
   panel_cat <- function(yr, show_legend = FALSE) {
     ggplot() +
       geom_sf(data = belt_map,
               aes(fill = .data[[paste0(cat_prefix, "_pooled_", yr)]]),
-              color = "gray60", linewidth = 0.15) +
-      scale_fill_manual(values = pal_cat, name = paste0(legend_title, "\ncategory"),
-                        drop = FALSE) +
-      scalebar_layer + theme_map +
+              color = "gray60") +
+      scale_fill_brewer(palette = "Pastel1", name = cat_title, drop = FALSE) +
+      scalebar_layer + coord_sf(default_crs = sf::st_crs(4269)) +
+      scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34)) +
+      theme_map_orig +
       theme(legend.position = if (show_legend) "right" else "none")
   }
 
@@ -325,62 +355,106 @@ index_map_fig <- function(idx_prefix, cat_prefix, legend_title, fig_name) {
     (panel_cat(2000) + panel_cat(2011) + panel_cat(2016, show_legend = TRUE))
   save_fig(fig, fig_name, 12, 8)
 }
-if (want(7))  index_map_fig("Index_Vuln", "Vuln_Cat", "Vulnerability index", "Fig07_Vuln_Maps")
-if (want(8))  index_map_fig("Index_Housing", "House_Cat", "Housing market index", "Fig08_Housing_Maps")
-if (want(15)) index_map_fig("Index_DR", "DR_Cat", "Displacement risk index", "Fig15_DRI_Maps")
+if (want(7))  index_map_fig("Index_Vuln", "Vuln_Cat", "Vulnerability Index",
+                            "Vulnerability Categories", c(0, 750), c(0, 250, 500, 750),
+                            c("0 Lowest", "250", "500", "750 Highest"), "Fig07_Vuln_Maps")
+if (want(8))  index_map_fig("Index_Housing", "House_Cat", "Housing Market Index",
+                            "Housing Market Categories", c(0, 750), c(0, 250, 500, 750),
+                            c("0 Lowest", "250", "500", "750 Highest"), "Fig08_Housing_Maps")
+if (want(15)) index_map_fig("Index_DR", "DR_Cat", "Displacement Risk Index",
+                            "DRI Categories", c(0, 1500), c(0, 300, 600, 900, 1200, 1500),
+                            c("Lowest", "300", "600", "900", "1200", "Highest"), "Fig15_DRI_Maps")
 
 # ==============================================================================
 # Figures 9, 10 - alluvial diagrams of category change
 # ==============================================================================
+# Original style: default ggplot hue palette, "... Vulnerability"-suffixed
+# trajectory labels, stratum boxes labeled Low/Mod/High, years 2000/2011/2016.
+traj_display <- c("Persistently High", "Persistently Moderate", "Persistently Low",
+                  "Increasing Vulnerability", "Decreasing Vulnerability",
+                  "Fluctuating Vulnerability")
+
 alluvial_fig <- function(cat_prefix, traj_col, legend_title, fig_name) {
   d <- st_drop_geometry(map_data) %>%
     select(GEOID, belt_flag,
            S_2000 = paste0(cat_prefix, "_pooled_2000"),
            S_2011 = paste0(cat_prefix, "_pooled_2011"),
            S_2016 = paste0(cat_prefix, "_pooled_2016"),
-           Trajectory = all_of(traj_col))
+           Trajectory = all_of(traj_col)) %>%
+    mutate(Trajectory = factor(traj_display[as.integer(Trajectory)],
+                               levels = traj_display))
 
   one <- function(dd, xlab) {
     agg <- dd %>% count(S_2000, S_2011, S_2016, Trajectory, name = "Frequency")
     ggplot(agg, aes(axis1 = S_2000, axis2 = S_2011, axis3 = S_2016, y = Frequency)) +
       geom_alluvium(aes(fill = Trajectory)) +
-      geom_stratum(fill = "white", color = "gray40") +
+      geom_stratum() +
       geom_text(stat = "stratum",
-                aes(label = after_stat(stratum)), size = 2.6) +
-      scale_x_discrete(limits = c("2000", "2007-2011", "2012-2016")) +
-      scale_fill_manual(values = pal_traj, name = legend_title, drop = FALSE) +
-      labs(x = xlab, y = "Block groups") +
-      theme_minimal(base_size = 10) + theme(panel.grid.minor = element_blank())
+                aes(label = after_stat(
+                  c(High = "High", Moderate = "Mod", Low = "Low")[as.character(stratum)]))) +
+      scale_x_discrete(limits = c("2000", "2011", "2016")) +
+      scale_fill_discrete(name = legend_title, drop = FALSE) +
+      labs(x = xlab, y = "Frequency") +
+      theme_minimal(base_size = 11)
   }
   fig <- one(d, "City of Atlanta") +
-    one(d %>% filter(belt_flag == "BeltLine"), "BeltLine") +
-    one(d %>% filter(belt_flag == "Not BeltLine"), "Not BeltLine") +
+    one(d %>% filter(belt_flag == "BeltLine"),
+        "Block groups targeted for\nBeltLine Redevelopment") +
+    one(d %>% filter(belt_flag == "Not BeltLine"),
+        "Block groups not targeted for\nBeltLine Redevelopment") +
     plot_layout(ncol = 3, guides = "collect")
   save_fig(fig, fig_name, 14, 6)
 }
-if (want(9))  alluvial_fig("Vuln_Cat", "Vuln_Traj", "Vulnerability\ntrajectory", "Fig09_Vuln_Alluvial")
-if (want(10)) alluvial_fig("House_Cat", "House_Traj", "Housing market\ntrajectory", "Fig10_Housing_Alluvial")
+if (want(9))  alluvial_fig("Vuln_Cat", "Vuln_Traj", "Social Vulnerability Risk\nTrajectories", "Fig09_Vuln_Alluvial")
+if (want(10)) alluvial_fig("House_Cat", "House_Traj", "Housing Market Risk\nTrajectories", "Fig10_Housing_Alluvial")
 
 # ==============================================================================
 # Figures 11-14, 16, 17 - trajectory maps
 # ==============================================================================
-traj_map_fig <- function(traj_col, legend_title, fig_name, beltline_only = FALSE,
-                         width = 8, height = 8) {
+# Original style: left composite map (Paired palette, mile scale bar, graticule)
+# plus right 2x3 facet grid of per-trajectory small multiples over a gray base
+# with the BeltLine footprint shaded and navy interstates.
+traj_map_fig <- function(traj_col, title, fig_name, beltline_only = FALSE,
+                         suffix_vuln = TRUE) {
   d <- if (beltline_only) belt_map else map_data
-  fig <- ggplot() +
-    geom_sf(data = d, aes(fill = .data[[traj_col]]), color = "gray60",
-            linewidth = 0.15) +
-    scale_fill_manual(values = pal_traj, name = legend_title, drop = FALSE) +
-    geom_sf(data = sub_outline, fill = NA, color = "#22302e", linewidth = 0.6) +
-    scalebar_layer + theme_map
-  save_fig(fig, fig_name, width, height)
+  labs6 <- if (suffix_vuln) traj_display else levels(map_data[[traj_col]])
+  d <- d %>% mutate(TrajDisp = factor(labs6[as.integer(.data[[traj_col]])],
+                                      levels = labs6))
+  base <- if (beltline_only) belt_map else bg316
+
+  composite <- ggplot() +
+    geom_sf(data = d, aes(fill = TrajDisp, color = TrajDisp), show.legend = FALSE) +
+    scale_color_manual(values = pal_paired, drop = FALSE) +
+    scale_fill_manual(values = pal_paired, drop = FALSE) +
+    scalebar_layer + coord_sf(default_crs = sf::st_crs(4269)) + theme_map_orig
+
+  facets <- ggplot() +
+    geom_sf(data = base, color = "gray80", lwd = 0.15, fill = NA) +
+    geom_sf(data = d, aes(fill = TrajDisp, color = TrajDisp), alpha = 0.95,
+            show.legend = FALSE) +
+    {if (!beltline_only)
+      geom_sf(data = belt_footprint, lwd = 0.4, fill = "gray60",
+              colour = "gray30", alpha = 0.3)} +
+    {if (!beltline_only)
+      geom_sf(data = city_outline, color = "gray40", fill = NA)} +
+    geom_sf(data = expr_city, color = col_interstate, linewidth = 0.35) +
+    scale_color_manual(values = pal_paired, drop = FALSE) +
+    scale_fill_manual(values = pal_paired, drop = FALSE) +
+    ggtitle(title) +
+    coord_sf(datum = NA) +
+    theme_minimal() +
+    facet_wrap(~TrajDisp, labeller = label_wrap_gen(width = 12), drop = FALSE)
+
+  fig <- (composite + facets) &
+    theme(plot.title = element_text(size = 18, hjust = 0.5))
+  save_fig(fig, fig_name, 15, 8)
 }
-if (want(11)) traj_map_fig("Vuln_Traj",  "Vulnerability trajectory",  "Fig11_Vuln_Traj_City")
-if (want(12)) traj_map_fig("House_Traj", "Housing market trajectory", "Fig12_Housing_Traj_City")
-if (want(13)) traj_map_fig("Vuln_Traj",  "Vulnerability trajectory",  "Fig13_Vuln_Traj_BeltLine",  beltline_only = TRUE)
-if (want(14)) traj_map_fig("House_Traj", "Housing market trajectory", "Fig14_Housing_Traj_BeltLine", beltline_only = TRUE)
-if (want(16)) traj_map_fig("DR_Traj",    "Displacement risk trajectory", "Fig16_DRI_Traj_City")
-if (want(17)) traj_map_fig("DR_Traj",    "Displacement risk trajectory", "Fig17_DRI_Traj_BeltLine", beltline_only = TRUE)
+if (want(11)) traj_map_fig("Vuln_Traj",  "Social Vulnerability Risk Trajectories", "Fig11_Vuln_Traj_City")
+if (want(12)) traj_map_fig("House_Traj", "Housing Market Risk Trajectories", "Fig12_Housing_Traj_City")
+if (want(13)) traj_map_fig("Vuln_Traj",  "Vulnerability Trajectories", "Fig13_Vuln_Traj_BeltLine",  beltline_only = TRUE)
+if (want(14)) traj_map_fig("House_Traj", "Housing Market Trajectories", "Fig14_Housing_Traj_BeltLine", beltline_only = TRUE)
+if (want(16)) traj_map_fig("DR_Traj",    "Displacement Risk Trajectories", "Fig16_DRI_Traj_City", suffix_vuln = FALSE)
+if (want(17)) traj_map_fig("DR_Traj",    "Displacement Risk Trajectories", "Fig17_DRI_Traj_BeltLine", beltline_only = TRUE, suffix_vuln = FALSE)
 
 # ==============================================================================
 # Figure 18 - global Moran's I and LISA clusters, pooled DRI, by period
