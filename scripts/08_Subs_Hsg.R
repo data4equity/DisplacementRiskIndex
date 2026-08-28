@@ -265,7 +265,7 @@ MHHI_00<-MHHI_00 %>% mutate(MHHI_Q = ntile(MHHI, 5))
 MHHI_07_11<-MHHI_07_11 %>% mutate(MHHI_Q = ntile(MHHI, 5))
 MHHI_12_16<-MHHI_12_16 %>% mutate(MHHI_Q = ntile(MHHI, 5))
 
-test<-spdep::poly2nb(MHHI_00, row.names = "GEOID")
+test<-spdep::poly2nb(MHHI_00, row.names = MHHI_00$GEOID)
 #summary.nb(test)
 
 test<-spdep::nb2mat(test, zero.policy=TRUE, style = "B")
@@ -292,7 +292,7 @@ test<-test %>%
 MHHI_00<-left_join(MHHI_00, test, by=c("GEOID" = "Var1"))
 rm(test)
 
-test<-spdep::poly2nb(MHHI_07_11, row.names = "GEOID")
+test<-spdep::poly2nb(MHHI_07_11, row.names = MHHI_07_11$GEOID)
 #summary.nb(test)
 
 test<-spdep::nb2mat(test, zero.policy=TRUE, style = "B")
@@ -319,7 +319,7 @@ test<-test %>%
 MHHI_07_11<-left_join(MHHI_07_11, test, by=c("GEOID" = "Var1"))
 rm(test)
 
-test<-spdep::poly2nb(MHHI_12_16, row.names = "GEOID")
+test<-spdep::poly2nb(MHHI_12_16, row.names = MHHI_12_16$GEOID)
 #summary.nb(test)
 
 test<-spdep::nb2mat(test, zero.policy=TRUE, style = "B")

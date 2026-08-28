@@ -18,11 +18,15 @@ suppressPackageStartupMessages({
   library(scales)
 })
 
-input_file <- "outputs/DRI_dataset_origpcts.csv"
+input_file <- if (file.exists("outputs/DRI_origpcts.csv")) {
+  "outputs/DRI_origpcts.csv"
+} else {
+  "outputs/DRI_dataset_origpcts.csv"
+}
 
 if (!file.exists(input_file)) {
   stop(
-    "Missing outputs/DRI_dataset_origpcts.csv. Run scripts/01_Master_Datasets.R first to produce it.",
+    "Missing outputs/DRI_origpcts.csv. Run scripts/01_Master_Datasets.R first to produce it.",
     call. = FALSE
   )
 }
