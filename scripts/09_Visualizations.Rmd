@@ -1,0 +1,1691 @@
+---
+title: "09_Visualization"
+author: "Patrice C Williams"
+date: "6/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+dev = "tiff"
+sf_use_s2(FALSE)
+```
+
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(tigris)
+library(sf)
+library(scales)
+library(patchwork)
+library(ggalluvial)
+library(ggthemes)
+library(ggpubr)
+library(ggplot2)
+library(ggsn)
+```
+
+```{r load data, echo=FALSE, include=FALSE}
+# Run this R script prior to working in R markdown: 01_Master_Datasets}
+
+beltline<-st_make_valid(st_read("data_raw/Beltline/subareas_shapefiles/beltline_subareas.shp"))
+
+# bg_limits_belt <- bg_limits_avg[!bg_limits_avg$GEOID == "131210036001",] %>%
+#   mutate(belt_flag = case_when(belt_flag== "Beltline" ~ "BeltLine",
+#                                belt_flag== "Not Beltline" ~ "Not BeltLine")) %>% 
+#   dplyr::select(GEOID, belt_flag, geometry.y)
+
+bg_limits_belt <- bg_limits[!bg_limits$GEOID == "131219800001",] %>%
+  mutate(belt_flag = case_when(belt_flag== "Beltline" ~ "BeltLine",
+                               belt_flag== "Not Beltline" ~ "Not BeltLine")) %>%
+  dplyr::select(GEOID, belt_flag, geometry)
+
+# bg_limits_update <- bg_limits_avg %>%
+#   mutate(belt_flag = case_when(belt_flag== "Beltline" ~ "BeltLine",
+#                                belt_flag== "Not Beltline" ~ "Not BeltLine")) %>% 
+#   dplyr::select(GEOID, belt_flag, geometry.y)
+
+bg_limits_ATL <- bg_limits_belt %>% 
+  sf::st_union()
+
+# Combining different year datasets into one
+dataset <- bind_rows(dataset_00, dataset_11, dataset_16)
+# Note .x variables are the z-scored and rescaled and .y are the original info prior to being standardized
+dataset <- left_join(dataset, dataset_0016g, by = c("GEOID" = "GEOID", "S_Year" = "S_Year"))
+# Creating a unique ID for each unique geoid; we are grouping geoids
+dataset_id <- dataset %>% 
+  group_by(GEOID) %>% 
+  dplyr::mutate(ID = cur_group_id())
+
+# Adding spatial data to attribute data
+dataset_id <- left_join(dataset_id, bg_limits, by = c("GEOID" = "GEOID")) %>% 
+  subset(select = -c(geometry.x, belt_flag.x)) 
+
+# Including in dataset whether projects have been completed or slated for greenspace projects
+# Year: 2000
+completed_2000 <- Parks_0711 %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_) %>% # needed to use dplyr because the select option wasn't being recognized 
+  mutate(Completed = 0,
+         Year = "2000",
+         Slated = Completed)
+completed_2000[is.na(completed_2000)] <- 0
+completed_2000 <- st_set_geometry(completed_2000, NULL)
+
+# Year: 2012-2016
+completed_1216r <- Parks_1219 %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_) 
+completed_1216r <- st_set_geometry(completed_1216r, NULL)
+completed_1216 <- completed_1216r %>%  
+  mutate(Completed = case_when(Year_ == "2012" ~ 1),
+         Slated = case_when(Year_ == "2012" ~ 0,
+                            Year_ %in% c("2017","2019") ~ 1),
+         Year = "2016")
+completed_1216[is.na(completed_1216)] <- 0
+
+# Year: 2007-2011
+completed_0711 <- Parks_0711 %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_)
+completed_0711 <- st_set_geometry(completed_0711, NULL)
+completed_0711 <- left_join(completed_0711, completed_1216, by = c("GEOID" = "GEOID"))
+
+completed_0711 <- completed_0711 %>% 
+  mutate(Name.y = ifelse(GEOID == "131210062001", "West End Trail", Name.y),
+         Implementa.y = ifelse(GEOID == "131210062001", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210062001", "2008", Year_.y),
+         Name.y = ifelse(GEOID == "131210042002", "West End Trail", Name.y),
+         Implementa.y = ifelse(GEOID == "131210042002", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210042002", "2008", Year_.y),
+         Name.y = ifelse(GEOID == "131210041003", "West End Trail", Name.y),
+         Implementa.y = ifelse(GEOID == "131210041003", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210041003", "2008", Year_.y),
+         Name.y = ifelse(GEOID == "131210091011", "Northside Trail", Name.y),
+         Status.y = ifelse(GEOID == "131210091011", "Completed", Status.y),
+         Implementa.y = ifelse(GEOID == "131210091011", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210091011", "2010", Year_.y),
+         Name.y = ifelse(GEOID == "131210090003", "Northside Trail", Name.y),
+         Status.y = ifelse(GEOID == "131210090003", "Completed", Status.y),
+         Implementa.y = ifelse(GEOID == "131210090003", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210090003", "2010", Year_.y),
+         Name.y = ifelse(GEOID == "131210091012", "Northside Trail", Name.y),
+         Status.y = ifelse(GEOID == "131210091012", "Completed", Status.y),
+         Implementa.y = ifelse(GEOID == "131210091012", "PATH Foundation", Implementa.y),
+         Year_.y = ifelse(GEOID == "131210091012", "2010", Year_.y),
+         Name = Name.y,
+         Status = Status.y,
+         Implementa = Implementa.y,
+         Year_ = Year_.y) %>% 
+  dplyr::select(GEOID, Name, Status, Implementa, Year_)
+completed_0711 <- completed_0711 %>% 
+  mutate(Completed = case_when(Year_ %in% c("2008", "2010") ~ 1),
+         Year = "2011",
+         Slated = case_when(Year_ %in% c("2012", "2017", "2019") ~ 1))
+completed_0711[is.na(completed_0711)] <- 0
+
+# Combine the two datasets to create a master dataset
+dataset_green<-bind_rows(completed_2000, completed_0711, completed_1216) %>% 
+  distinct(GEOID, Year, .keep_all = TRUE)
+dataset_id <- left_join(dataset_id, dataset_green, by = c("GEOID" = "GEOID", "S_Year" = "Year"))
+dataset_id$Name <- ifelse(is.na(dataset_id$Name), 0, dataset_id$Name)
+dataset_id$Status <- ifelse(is.na(dataset_id$Status), 0, dataset_id$Status)
+dataset_id$Implementa <- ifelse(is.na(dataset_id$Implementa), 0, dataset_id$Implementa)
+dataset_id$Year_ <- ifelse(is.na(dataset_id$Year_), 0, dataset_id$Year_)
+dataset_id$Completed <- ifelse(is.na(dataset_id$Completed), 0, dataset_id$Completed)
+dataset_id$Slated <- ifelse(is.na(dataset_id$Slated), 0, dataset_id$Slated)
+
+dataset_id <- dataset_id %>% 
+  mutate(belt_flag = as.factor(case_when(belt_flag == "Not Beltline" ~ 0,
+                              belt_flag == "Beltline" ~ 1)))
+
+# Create a different dataset for BeltLine groups
+dataset_belt <- dataset_id %>%
+  filter(belt_flag.y=="Beltline")
+
+# Checking if there are any missing values
+any(is.na(dataset_id)) # There should be no missing values prior to moving forward
+any(is.na(dataset_belt))
+
+# Constructing binary variables for the different index categories - City of Atlanta
+m <- dataset_id %>% 
+  mutate(DR_High = as.factor(case_when(DR_Cat == "High Displacement Risk" ~ 1,
+                                       DR_Cat == "Moderate Displacement Risk" ~ 0,
+                                       DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Mod = as.factor(case_when(DR_Cat == "Moderate Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Low = as.factor(case_when(DR_Cat == "Low Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Moderate Displacement Risk" ~ 0)),
+         Vul_Low = as.factor(case_when(Vuln_Cat == "Low Vulnerability" ~ 1,
+                                       Vuln_Cat == "Moderate Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_Mod = as.factor(case_when(Vuln_Cat == "Moderate Vulnerability" ~ 1,
+                                       Vuln_Cat == "Low Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_High = as.factor(case_when(Vuln_Cat == "High Vulnerability" ~ 1,
+                                        Vuln_Cat == "Low Vulnerability" ~ 0,
+                                        Vuln_Cat == "Moderate Vulnerability"~ 0)),
+         HM_Low = as.factor(case_when(House_Cat == "Low Vulnerability" ~ 1,
+                                       House_Cat == "Moderate Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_Mod = as.factor(case_when(House_Cat == "Moderate Vulnerability" ~ 1,
+                                       House_Cat == "Low Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_High = as.factor(case_when(House_Cat == "High Vulnerability" ~ 1,
+                                        House_Cat == "Low Vulnerability" ~ 0,
+                                        House_Cat == "Moderate Vulnerability"~ 0)))
+m$DR_High = as.numeric(as.character(m$DR_High))
+m$DR_Mod = as.numeric(as.character(m$DR_Mod))
+m$DR_Low = as.numeric(as.character(m$DR_Low))
+m$Vul_Low = as.numeric(as.character(m$Vul_Low))
+m$Vul_Mod = as.numeric(as.character(m$Vul_Mod))
+m$Vul_High = as.numeric(as.character(m$Vul_High))
+m$HM_Low = as.numeric(as.character(m$HM_Low))
+m$HM_Mod = as.numeric(as.character(m$HM_Mod))
+m$HM_High = as.numeric(as.character(m$HM_High))
+
+# Constructing binary variables for the different index categories - BeltLine
+b <- dataset_belt %>% 
+  mutate(DR_High = as.factor(case_when(DR_Cat == "High Displacement Risk" ~ 1,
+                                       DR_Cat == "Moderate Displacement Risk" ~ 0,
+                                       DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Mod = as.factor(case_when(DR_Cat == "Moderate Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Low Displacement Risk" ~ 0)),
+         DR_Low = as.factor(case_when(DR_Cat == "Low Displacement Risk" ~ 1,
+                                      DR_Cat == "High Displacement Risk" ~ 0,
+                                      DR_Cat == "Moderate Displacement Risk" ~ 0)),
+         Vul_Low = as.factor(case_when(Vuln_Cat == "Low Vulnerability" ~ 1,
+                                       Vuln_Cat == "Moderate Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_Mod = as.factor(case_when(Vuln_Cat == "Moderate Vulnerability" ~ 1,
+                                       Vuln_Cat == "Low Vulnerability" ~ 0,
+                                       Vuln_Cat == "High Vulnerability" ~ 0)),
+         Vul_High = as.factor(case_when(Vuln_Cat == "High Vulnerability" ~ 1,
+                                        Vuln_Cat == "Low Vulnerability" ~ 0,
+                                        Vuln_Cat == "Moderate Vulnerability"~ 0)),
+         HM_Low = as.factor(case_when(House_Cat == "Low Vulnerability" ~ 1,
+                                       House_Cat == "Moderate Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_Mod = as.factor(case_when(House_Cat == "Moderate Vulnerability" ~ 1,
+                                       House_Cat == "Low Vulnerability" ~ 0,
+                                       House_Cat == "High Vulnerability" ~ 0)),
+         HM_High = as.factor(case_when(House_Cat == "High Vulnerability" ~ 1,
+                                        House_Cat == "Low Vulnerability" ~ 0,
+                                        House_Cat == "Moderate Vulnerability"~ 0)),
+         belt_flag = as.factor(case_when(belt_flag == "Not Beltline" ~ 0,
+                                         belt_flag == "Beltline" ~ 1)))
+b$DR_High = as.numeric(as.character(b$DR_High))
+b$DR_Mod = as.numeric(as.character(b$DR_Mod))
+b$DR_Low = as.numeric(as.character(b$DR_Low))
+b$Vul_Low = as.numeric(as.character(b$Vul_Low))
+b$Vul_Mod = as.numeric(as.character(b$Vul_Mod))
+b$Vul_High = as.numeric(as.character(b$Vul_High))
+b$HM_Low = as.numeric(as.character(b$HM_Low))
+b$HM_Mod = as.numeric(as.character(b$HM_Mod))
+b$HM_High = as.numeric(as.character(b$HM_High))
+```
+
+# Supplemental Figure 1: Locator Map ---- 
+
+```{r supp fig 1, echo=FALSE, include=FALSE}
+
+Locator_1<-ggplot()+
+  geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+  geom_sf(data=beltline %>% summarise(geometry = sf::st_union(geometry)), fill = "gray60", colour = "gray40")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  ggtitle(label = "Atlanta BeltLine")+
+  theme_minimal()+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 3, transform = TRUE)+
+  theme(legend.position = "none", plot.title = element_text(size = 20, hjust = 0.65), panel.grid.major = element_line(colour = "transparent"), axis.title = element_blank())
+
+Locator_2<-ggplot()+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% dplyr::summarise(n()), color = "gray40", fill=NA)+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = "gray60", colour = "gray30")+
+  geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  ggtitle(label = "Atlanta BeltLine Block Groups")+
+  theme_minimal()+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 3, transform = TRUE)+
+  theme(legend.position = "none", plot.title = element_text(size = 20, hjust = 0.65), panel.grid.major = element_line(colour = "transparent"), axis.title = element_blank())
+
+Locator_1 + Locator_2+
+  plot_layout(ncol = 2) 
+
+# ggsave("F0_Locator.tiff", width = 16, height = 8, dpi = 150)
+```
+
+# Supplemental Figure 2: Index Kernel Density Plots ----
+
+```{r supp fig 2, echo=FALSE, include=FALSE}
+
+data_00 <- subset(dataset_id, S_Year == "2000") %>% 
+  mutate(belt_flag.y = case_when(belt_flag.y== "Beltline" ~ "BeltLine",
+                               belt_flag.y== "Not Beltline" ~ "Not BeltLine"))
+
+data_11 <- subset(dataset_id, S_Year == "2011") %>% 
+  mutate(belt_flag.y = case_when(belt_flag.y== "Beltline" ~ "BeltLine",
+                                 belt_flag.y== "Not Beltline" ~ "Not BeltLine"))
+
+data_16 <- subset(dataset_id, S_Year == "2016") %>% 
+  mutate(belt_flag.y = case_when(belt_flag.y== "Beltline" ~ "BeltLine",
+                                 belt_flag.y== "Not Beltline" ~ "Not BeltLine"))
+
+Index_Density1<-ggplot()+
+  geom_density(data=data_00, aes(x=Index_Vuln, colour = belt_flag.y))+
+  lims(x= c(0, 800), y=c(0, .0045))+
+  labs(x = "Vulnerability Index", colour = "Location")+
+  ggtitle(label = "2000")+
+  theme_classic()+
+  theme(legend.position = "bottom", plot.title = element_text(size = 18, hjust = 0.5), axis.title = element_text(size = 14),axis.text = element_text(size = 12))
+
+Index_Density2<-ggplot()+
+  geom_density(data=data_11, aes(x=Index_Vuln, colour = belt_flag.y))+
+  lims(x= c(0, 800), y=c(0, .0045))+
+  labs(x = "Vulnerability Index", colour = "Location")+
+  ggtitle(label = "2007 - 2011")+
+  theme_classic()+
+  theme(legend.position = "bottom", plot.title = element_text(size = 18, hjust = 0.5), axis.title = element_text(size = 14),axis.text = element_text(size = 12))
+
+Index_Density3<-ggplot()+
+  geom_density(data=data_16, aes(x=Index_Vuln, colour = belt_flag.y))+
+  lims(x= c(0, 800), y=c(0, .0045))+
+  labs(x = "Vulnerability Index", colour = "Location")+
+  ggtitle(label = "2012 - 2016")+
+  theme_classic()+
+  theme(legend.position = "bottom", plot.title = element_text(size = 18, hjust = 0.5), axis.title = element_text(size = 14),axis.text = element_text(size = 12))
+
+Index_Density4<-ggplot()+
+  geom_density(data=data_00, aes(x=Index_Housing, colour = belt_flag.y))+
+  lims(x= c(100, 600), y=c(0, .009))+
+  labs(x = "Housing Market Index", colour = "Location")+
+  theme_classic()+
+  theme(legend.position = "bottom",axis.title = element_text(size = 14),axis.text = element_text(size = 12))
+
+Index_Density5<-ggplot()+
+  geom_density(data=data_11, aes(x=Index_Housing, colour = belt_flag.y))+
+  lims(x= c(100, 600), y=c(0, .009))+
+  labs(x = "Housing Market Index", colour = "Location")+
+  theme_classic()+
+  theme(legend.position = "bottom", axis.title = element_text(size = 14),axis.text = element_text(size = 12))
+
+Index_Density6<-ggplot()+
+  geom_density(data=data_16, aes(x=Index_Housing, colour = belt_flag.y))+
+  lims(x= c(100, 600), y=c(0, .009))+
+  labs(x = "Housing Market Index", colour = "Location")+
+  theme_classic()+
+  theme(legend.position = "bottom", axis.title = element_text(size = 14),axis.text = element_text(size = 12))
+
+Index_Density1 + Index_Density2 +Index_Density3+Index_Density4+Index_Density5+Index_Density6+
+plot_layout(ncol = 3, nrow = 2, guides = "collect") & 
+  theme(legend.position = "bottom", legend.text = element_text(size = 15), legend.title = element_blank())
+
+# ggsave("F1_Index_Density.tiff", width = 16, height = 8, dpi = 150)
+
+```
+
+# Supplemental Figure 6: Vulnerability Index Alluvial Diagrams ----
+
+
+```{r supp fig 6, echo=FALSE, include=FALSE}
+
+Allu_00<-data_00 %>% dplyr::select(GEOID, belt_flag.y, S_Year, Vuln_Cat, House_Cat, Index_Vuln, Index_Housing, Index_Q_Vuln, Index_Q_Housing)
+Allu_11<-data_11 %>% dplyr::select(GEOID, belt_flag.y, S_Year, Vuln_Cat,  House_Cat, Index_Vuln, Index_Housing, Index_Q_Vuln, Index_Q_Housing)
+Allu_16<-data_16 %>% dplyr::select(GEOID, belt_flag.y, S_Year, Vuln_Cat,  House_Cat, Index_Vuln, Index_Housing, Index_Q_Vuln, Index_Q_Housing)
+dataset<-bind_rows(Allu_00, Allu_11, Allu_16)
+dataset_wide <- dataset %>% dplyr::select(GEOID, belt_flag.y, S_Year, Vuln_Cat) %>% pivot_wider(names_from = S_Year, names_prefix = "S_",values_from = Vuln_Cat)
+dataset_wide <- dataset_wide %>% group_by(S_2000, S_2011, S_2016) %>% dplyr::summarize(Frequency = n()) %>% 
+  mutate(Trajectory = case_when(
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Persistently High",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Persistently Moderate",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Persistently Low",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability",  
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",  
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+    )) %>% 
+  mutate(Trajectory = factor(Trajectory, levels = c("Persistently High", "Persistently Moderate", "Persistently Low", "Increasing Vulnerability", "Decreasing Vulnerability", "Fluctuating Vulnerability")))
+
+# Visualize all Atlanta by Trajectories
+Allu_Atl<-ggplot(data= dataset_wide, aes(axis1 = S_2000, axis2 = S_2011, axis3 = S_2016, y = Frequency))+
+  geom_alluvium(aes(fill = Trajectory))+geom_stratum()+
+  geom_text(stat="stratum", aes(label = after_stat(c("Low", "Mod", "High"))))+
+  scale_x_discrete(limits = c("2000", "2011", "2016"))+
+  labs(x="City of Atlanta", fill = "Vulnerability Trajectories")+
+  theme_minimal()+
+  theme(axis.title = element_text(size = 18),axis.text = element_text(size = 14))
+
+
+# Create Disaggregate for Beltline
+dataset_wide2 <- dataset %>% dplyr::select(GEOID, belt_flag.y, S_Year, Vuln_Cat) %>% pivot_wider(names_from = S_Year, names_prefix = "S_",values_from = Vuln_Cat)
+dataset_wide2 <- dataset_wide2 %>% group_by(belt_flag.y, S_2000, S_2011, S_2016) %>% dplyr::summarize(Frequency = n()) %>% 
+  mutate(Trajectory = case_when(
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Persistently High",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Persistently Moderate",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Persistently Low",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability",  
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",  
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+  )) %>% 
+  mutate(Trajectory = factor(Trajectory, levels = c("Persistently High", "Persistently Moderate", "Persistently Low", "Increasing Vulnerability", "Decreasing Vulnerability", "Fluctuating Vulnerability")))
+
+
+Allu_Belt<-ggplot(data= dataset_wide2 %>% filter(belt_flag.y == "BeltLine"), aes(axis1 = S_2000, axis2 = S_2011, axis3 = S_2016, y = Frequency))+
+  geom_alluvium(aes(fill = Trajectory))+geom_stratum()+
+  geom_text(stat="stratum", aes(label = after_stat(c("Low", "Mod", "High"))))+
+  scale_x_discrete(limits = c("2000", "2011", "2016"))+
+  labs(x="BeltLine", fill = "Vulnerability Trajectories")+
+  theme_minimal()+
+  theme(axis.title = element_text(size = 18),axis.text = element_text(size = 14))
+
+
+Allu_NoBelt<-ggplot(data= dataset_wide2 %>% filter(belt_flag.y == "Not BeltLine"), aes(axis1 = S_2000, axis2 = S_2011, axis3 = S_2016, y = Frequency))+
+  geom_alluvium(aes(fill = Trajectory))+geom_stratum()+
+  geom_text(stat="stratum", aes(label = after_stat(c("Low", "Mod", "High"))))+
+  scale_x_discrete(limits = c("2000", "2011", "2016"))+
+  labs(x="Not BeltLine", fill = "Vulnerability Trajectories")+
+  theme_minimal()+
+  theme(axis.title = element_text(size = 18),axis.text = element_text(size = 14))
+
+
+#ggarrange(Allu_Atl, Allu_Belt, Allu_NoBelt, ncol=3, nrow=1, common.legend = TRUE)
+Allu_Atl+Allu_Belt+Allu_NoBelt+
+  plot_layout(ncol = 3, guides = "collect") & 
+  theme(legend.text = element_text(size = 15), legend.title = element_text(size = 18))
+
+# ggsave("F2_All_ATL_Alluvial.tiff", width = 20, height = 9, dpi = 150)
+```
+
+# Supplemental Figure 7: Housing Market Index Alluvial Diagrams ----
+
+```{r supp fig 7, echo=FALSE, include=FALSE}
+
+dataset_wide3 <- dataset %>% dplyr::select(GEOID, belt_flag.y, S_Year, House_Cat) %>% pivot_wider(names_from = S_Year, names_prefix = "S_",values_from = House_Cat)
+dataset_wide3 <- dataset_wide3 %>% group_by(belt_flag.y, S_2000, S_2011, S_2016) %>% dplyr::summarize(Frequency = n()) %>% 
+  mutate(Housing_Trajectory = case_when(
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Persistently High",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Persistently Moderate",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Persistently Low",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability",  
+    S_2000 == "High Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",  
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability", 
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "High Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "High Vulnerability" & S_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Moderate Vulnerability" & S_2011 == "Low Vulnerability" & S_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    S_2000 == "Low Vulnerability" & S_2011 == "Moderate Vulnerability" & S_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+  )) %>% 
+  mutate(Housing_Trajectory = factor(Housing_Trajectory, levels = c("Persistently High", "Persistently Moderate", "Persistently Low", "Increasing Vulnerability", "Decreasing Vulnerability", "Fluctuating Vulnerability")))
+
+
+Allu_Housing_Atl<-ggplot(data= dataset_wide3, aes(axis1 = S_2000, axis2 = S_2011, axis3 = S_2016, y = Frequency))+
+  geom_alluvium(aes(fill = Housing_Trajectory))+geom_stratum()+
+  geom_text(stat="stratum", aes(label = after_stat(c("Low", "Mod", "High"))))+
+  scale_x_discrete(limits = c("2000", "2011", "2016"))+
+  labs(x="City of Atlanta", fill = "Housing Trajectories")+
+  theme_minimal()+
+  theme(axis.title = element_text(size = 18),axis.text = element_text(size = 14))
+
+Allu_Housing_Belt<-ggplot(data= dataset_wide3 %>% filter(belt_flag.y == "BeltLine"), aes(axis1 = S_2000, axis2 = S_2011, axis3 = S_2016, y = Frequency))+
+  geom_alluvium(aes(fill = Housing_Trajectory))+geom_stratum()+
+  geom_text(stat="stratum", aes(label = after_stat(c("Low", "Mod", "High"))))+
+  scale_x_discrete(limits = c("2000", "2011", "2016"))+
+  labs(x="BeltLine", fill = "Housing Trajectories")+
+  theme_minimal()+
+  theme(axis.title = element_text(size = 18),axis.text = element_text(size = 14))
+
+Allu_Housing_NoBelt<-ggplot(data= dataset_wide3 %>% filter(belt_flag.y == "Not BeltLine"), aes(axis1 = S_2000, axis2 = S_2011, axis3 = S_2016, y = Frequency))+
+  geom_alluvium(aes(fill = Housing_Trajectory))+geom_stratum()+
+  geom_text(stat="stratum", aes(label = after_stat(c("Low", "Mod", "High"))))+
+  scale_x_discrete(limits = c("2000", "2011", "2016"))+
+  labs(x="Not BeltLine", fill = "Housing Trajectories")+
+  theme_minimal()+
+  theme(axis.title = element_text(size = 18),axis.text = element_text(size = 14))
+
+Allu_Housing_Atl+Allu_Housing_Belt+Allu_Housing_NoBelt+
+  plot_layout(ncol = 3, guides = "collect") & 
+  theme(legend.text = element_text(size = 15), legend.title = element_text(size = 18))
+
+# ggsave("F2_All_ATL_Housing_Alluvial.tiff", width = 20, height = 9, dpi = 150)
+
+
+```
+
+# Supplemental Figure #8: Maps: Vulnerability Trajectory for City of Atlanta ---- 
+
+```{r supp fig 8, echo=FALSE, include=FALSE}
+
+dataset_map<-dataset %>% 
+  dplyr::select(GEOID, S_Year, Index_Vuln, Vuln_Cat, Index_Housing, House_Cat) %>% 
+  pivot_wider(names_from = S_Year, values_from = c(Index_Vuln, Vuln_Cat, Index_Housing, House_Cat)) %>% 
+  mutate(Trajectory = case_when(
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Persistently High",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Persistently Moderate",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Persistently Low",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability",  
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",  
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability", 
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Decreasing Vulnerability", 
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Fluctuating Vulnerability",
+  )) %>% 
+  mutate(Trajectory = factor(Trajectory, levels = c("Persistently High", "Persistently Moderate", "Persistently Low", "Increasing Vulnerability", "Decreasing Vulnerability", "Fluctuating Vulnerability")))
+
+dataset_map<-left_join(dataset_map, bg_limits_belt, by="GEOID")
+dataset_map<-st_as_sf(dataset_map)
+
+ATL_Trajectory<-ggplot()+
+  geom_sf(data=dataset_map, aes(fill = Trajectory, color = Trajectory), show.legend = FALSE)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  labs(fill = "Vulnerability Trajectory")+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 4, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"))
+
+ATL_Trajectory_Facet<-ggplot()+
+  geom_sf(data=bg_limits_belt, color = "gray80", lwd=.15, fill=NA)+
+  geom_sf(data=dataset_map, aes(fill = Trajectory, color = Trajectory), alpha = .95, show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), lwd = .4, fill = "gray60", colour = "gray30", alpha = .3)+
+  geom_sf(data=bg_limits_belt %>% sf::st_union(), color = "gray40", fill=NA)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  ggtitle(label = "Vulnerability Trajectories")+
+  coord_sf(datum=NA)+
+  theme_minimal()+
+  theme(strip.text.x = element_text(size = 18))+
+  facet_wrap(~Trajectory, labeller = label_wrap_gen(width = 10))
+
+ATL_Trajectory + ATL_Trajectory_Facet &
+  theme(plot.title = element_text(size = 22, hjust = 0.5))
+
+# ggsave("F3_Map_ATL_Vulnerability_Trajectory.tiff", width = 15, height = 8, dpi = 150)
+
+```
+
+# Supplemental Figure #11: Maps: Vulnerability Trajectory for the BeltLine ---- 
+
+```{r supp fig 11, echo=FALSE, include=FALSE}
+Vuln_Trajectory<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Trajectory, color = Trajectory), show.legend = FALSE)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  labs(fill = "Vulnerability Trajectory")+
+  scalebar(bg_limits_belt %>% filter(belt_flag == "BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 4, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"))
+
+Beltline_Trajectory_Facet<-ggplot()+
+  geom_sf(data=bg_limits_belt %>% filter(belt_flag == "BeltLine"), color = "gray80", lwd=.15, fill=NA)+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Trajectory, color = Trajectory), alpha = .95, show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), lwd = .4, colour = "gray30", alpha = .3)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  ggtitle(label = "Vulnerability Trajectories")+
+  coord_sf(datum=NA)+
+  theme_minimal()+
+  theme(strip.text.x = element_text(size = 18))+
+  facet_wrap(~Trajectory, labeller = label_wrap_gen(width = 10))
+
+Vuln_Trajectory + Beltline_Trajectory_Facet &
+  theme(plot.title = element_text(size = 22, hjust = 0.5), legend.text = element_text(size = 16), legend.title = element_text(size = 18))
+
+# ggsave("F5_Beltline_Trajectory.tiff", width = 15, height = 8, dpi = 150)
+
+```
+
+# Supplemental Figure #4 : Maps: Vulnerability Index for the BeltLine ----
+
+```{r supp fig 4, echo=FALSE, include=FALSE}
+completed_0711_sf <- st_as_sf(left_join(completed_0711, bg_limits_belt)) %>% 
+  mutate(Parks_Trails = as.character(case_when(Slated ==1 ~ "Slated (2012-2016)",
+                                               Completed == 1 ~ "Completed")))
+
+completed_1216_sf <- st_as_sf(left_join(completed_1216, bg_limits_belt)) %>% 
+  mutate(Parks_Trails = as.character(case_when(Slated ==1 ~ "Slated (2012-2016 or 2017-2019)",
+                                               Completed == 1 ~ "Completed")))
+
+VIndex_1<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Index_Vuln_2000), color = "gray60")+
+  scale_fill_distiller(palette = "RdBu", breaks = c(0, 250, 500, 750), labels = c("0 Lowest", "250", "500", "750 Highest"), limits =c(0, 750))+
+  labs(fill = "Vulnerability Index")+
+  ggtitle(label = "2000")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(bg_limits_belt %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+VIndex_2<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Index_Vuln_2011), color = "gray60")+
+  geom_sf(data=completed_0711_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linewidth=1.10, fill=NA)+
+   scale_fill_distiller(palette = "RdBu", breaks = c(0, 250, 500, 750), labels = c("0 Lowest", "250", "500", "750 Highest"), limits =c(0, 750))+
+  labs(fill = "Vulnerability Index", color = "Park and Trail \nImprovements")+
+  ggtitle(label = "2007 - 2011")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(bg_limits_belt  %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+
+VIndex_3<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Index_Vuln_2016), color = "gray60")+
+  geom_sf(data=completed_1216_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linewidth = 1.10, fill=NA)+
+    scale_fill_distiller(palette = "RdBu", breaks = c(0, 250, 500, 750), labels = c("0 Lowest", "250", "500", "750 Highest"), limits =c(0, 750))+
+  labs(fill = "Vulnerability Index", color = "Park and Trail \nImprovements")+
+  ggtitle(label = "2012 - 2016")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scalebar(bg_limits_belt  %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  theme_minimal()+
+  theme(axis.title = element_blank())
+
+# Vulnerability Categories
+VCAT_1<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Vuln_Cat_2000), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "Vulnerability Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38))+
+  scalebar(bg_limits_belt  %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+VCAT_2<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Vuln_Cat_2011), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "Vulnerability Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(bg_limits_belt  %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+VCAT_3<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Vuln_Cat_2016), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "Vulnerability Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(bg_limits_belt  %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(axis.title = element_blank())
+
+VIndex_1 + VIndex_2 + VIndex_3 + VCAT_1 + VCAT_2 + VCAT_3+
+  plot_layout(ncol = 3, nrow = 2, guides = "collect") & 
+  theme(plot.title = element_text(hjust = 0.5), panel.grid.major = element_line(colour = "transparent"), plot.margin = unit(c(0.5,0.5,0.5,0.5,0.5,0.5), "cm"))
+
+ggsave("F4_Beltline_Vuln.tiff", width = 12, height = 8, dpi = 600)
+ggsave("F4_Beltline_Vuln.png", width = 12, height = 8, dpi = 600)
+
+```
+# Supplemental Figure #9: Maps: Housing Trajectory for City of Atlanta ---- 
+
+
+```{r supp fig 9, echo=FALSE, include=FALSE}
+dataset_map_Housing<-dataset %>% 
+  dplyr::select(GEOID, S_Year, Index_Vuln, Vuln_Cat, Index_Housing, House_Cat) %>% 
+  pivot_wider(names_from = S_Year, values_from = c(Index_Vuln, Vuln_Cat, Index_Housing, House_Cat)) %>% 
+  mutate(Trajectory = case_when(
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Persistently High",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Persistently Moderate",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Persistently Low",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Decreasing  Vulnerability",  
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability",  
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability", 
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability", 
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability", 
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Decreasing  Vulnerability", 
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Fluctuating  Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "High Vulnerability" ~ "Fluctuating  Vulnerability",
+    Vuln_Cat_2000 == "High Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "High Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Fluctuating  Vulnerability",
+    Vuln_Cat_2000 == "Moderate Vulnerability" & Vuln_Cat_2011 == "Low Vulnerability" & Vuln_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+    Vuln_Cat_2000 == "Low Vulnerability" & Vuln_Cat_2011 == "Moderate Vulnerability" & Vuln_Cat_2016 == "Low Vulnerability" ~ "Fluctuating  Vulnerability",
+  )) %>% 
+  mutate(Trajectory = factor(Trajectory, levels = c("Persistently High", "Persistently Moderate", "Persistently Low", "Increasing Vulnerability", "Decreasing  Vulnerability", "Fluctuating  Vulnerability")))
+
+dataset_map_Housing <- dataset_map_Housing %>% mutate(
+  Housing_Trajectory = case_when( House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Persistently High",
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Persistently Moderate",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Persistently Low",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Increasing Vulnerability",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Increasing Vulnerability",
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Decreasing  Vulnerability",  
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability",  
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability", 
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability", 
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability", 
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Decreasing  Vulnerability", 
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Decreasing  Vulnerability",
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "High Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "High Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "High Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "Moderate Vulnerability" & House_Cat_2011 == "Low Vulnerability" & House_Cat_2016 == "Moderate Vulnerability" ~ "Fluctuating  Vulnerability",
+                                                                                      House_Cat_2000 == "Low Vulnerability" & House_Cat_2011 == "Moderate Vulnerability" & House_Cat_2016 == "Low Vulnerability" ~ "Fluctuating  Vulnerability",
+)) %>% 
+  mutate(Housing_Trajectory = factor(Housing_Trajectory, levels = c("Persistently High", "Persistently Moderate", "Persistently Low", "Increasing Vulnerability", "Decreasing  Vulnerability", "Fluctuating  Vulnerability")))
+
+dataset_map_Housing<-left_join(dataset_map_Housing, bg_limits_belt, by="GEOID")
+dataset_map_Housing<-st_as_sf(dataset_map_Housing)
+
+
+ATL_House_Trajectory<-ggplot()+
+  geom_sf(data=dataset_map_Housing, aes(fill = Housing_Trajectory, color = Housing_Trajectory), show.legend = FALSE)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  labs(fill = "Housing Trajectories")+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 4, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"))
+
+ATL_House_Trajectory_Facet<-ggplot()+
+  geom_sf(data=bg_limits_belt, color = "gray80", lwd=.15, fill=NA)+
+  geom_sf(data=dataset_map_Housing, aes(fill = Housing_Trajectory, color = Housing_Trajectory), alpha = .95, show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), lwd = .4, fill = "gray60", colour = "gray30", alpha = .3)+
+  geom_sf(data=bg_limits_belt %>% st_union(), color = "gray40", fill=NA)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  ggtitle(label = "Housing Trajectories")+
+  coord_sf(datum=NA)+
+  theme_minimal()+
+  theme(strip.text.x = element_text(size = 18))+
+  facet_wrap(~Housing_Trajectory, labeller = label_wrap_gen(width = 10))
+
+ATL_House_Trajectory + ATL_House_Trajectory_Facet &
+  theme(plot.title = element_text(size = 22, hjust = 0.5))
+
+# ggsave("F3_Map_ATL_Housing_Trajectory.tiff", width = 15, height = 8, dpi = 150)
+
+
+```
+# Supplemental Figure #5 : Maps: Housing Market Index for the BeltLine ----
+
+```{r supp fig 5, echo=FALSE}
+
+HIndex_1<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Index_Housing_2000), color = "gray60")+
+  scale_fill_distiller(palette = "RdBu", breaks = c(0, 250, 500, 750), labels = c("0 Lowest", "200", "400", "600 Highest"), limits =c(0, 600))+
+  labs(fill = "Housing Index")+
+  ggtitle(label = "2000")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+HIndex_2<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Index_Housing_2011), color = "gray60")+
+  scale_fill_distiller(palette = "RdBu", breaks = c(0, 200, 400, 600), labels = c("0 Lowest", "200", "400", "600 Highest"), limits =c(0, 600))+
+  geom_sf(data=completed_0711_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linewidth=1.10, fill=NA)+
+  labs(fill = "Housing Index", color = "Park and Trail \nImprovements")+
+  ggtitle(label = "2007 - 2011")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+HIndex_3<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(fill = Index_Housing_2016), color = "gray60")+
+  geom_sf(data=completed_1216_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linewidth=1.10, fill=NA)+
+  scale_fill_distiller(palette = "RdBu", breaks = c(0, 200, 400, 600), labels = c("0 Lowest", "200", "400", "600 Highest"), limits =c(0, 600))+
+  labs(fill = "Housing Index", color = "Park and Trail \nImprovements")+
+  ggtitle(label = "2012 - 2016")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  theme_minimal()+
+  theme(axis.title = element_blank())+
+  guides(fill = guide_colorbar(order = 1), color = guide_legend(order = 0))
+
+# Housing Market Categories
+HCAT_1<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = House_Cat_2000), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "Vulnerability Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+HCAT_2<-ggplot()+  
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = House_Cat_2011), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "Vulnerability Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+HCAT_3<-ggplot()+
+  geom_sf(data=dataset_map %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = Vuln_Cat_2016), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "Vulnerability Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(axis.title = element_blank())
+
+HIndex_1 + HIndex_2 + HIndex_3 + HCAT_1 + HCAT_2 + HCAT_3+
+  plot_layout(ncol = 3, nrow = 2, guides = "collect") & 
+  theme(plot.title = element_text(hjust = 0.5), panel.grid.major = element_line(colour = "transparent"), plot.margin = unit(c(0.5,0.5,0.5,0.5,0.5,0.5), "cm"))
+
+ggsave("F5_Beltline_Housing.tiff", width = 12, height = 8, dpi = 600)
+ggsave("F5_Beltline_Housing.png", width = 12, height = 8, dpi = 600)
+```
+
+# Figure 1: Maps: Displacement Risk Index for BeltLine ---
+```{r fig 1, echo=FALSE}
+dataset_map_Housing %>% group_by(Trajectory, Housing_Trajectory) %>% count()
+
+# Composite Map
+dataset_map_DRI<-dataset_map_Housing %>% mutate(DRI_00 = Index_Vuln_2000+Index_Housing_2000,
+                                                    DRI_11 = Index_Vuln_2011+Index_Housing_2011,
+                                                    DRI_16 = Index_Vuln_2016+Index_Housing_2016)
+
+# Testing this out without altering the original dataframe
+# c <- dataset_map_DRI
+# c$DRI_Cat_00 <- ntile(c$DRI_Cat_00, 4)
+
+dataset_map_DRI$DRI_Cat_00 <- ntile(dataset_map_DRI$DRI_00, 4)
+dataset_map_DRI$DRI_Cat_11 <- ntile(dataset_map_DRI$DRI_11, 4)
+dataset_map_DRI$DRI_Cat_16 <- ntile(dataset_map_DRI$DRI_16, 4)
+
+dataset_map_DRI <- dataset_map_DRI %>% 
+  mutate(DRI_Cat_00 = case_when(DRI_Cat_00 == "1" ~ "Low Displacement Risk",
+                                DRI_Cat_00 %in% c("2", "3")~"Moderate Displacement Risk",
+                                DRI_Cat_00 %in% "4" ~ "High Displacement Risk"),
+         DRI_Cat_11 = case_when(DRI_Cat_11 == "1"~ "Low Displacement Risk",
+                                DRI_Cat_11 %in% c("2", "3")~"Moderate Displacement Risk",
+                                DRI_Cat_11 %in% "4" ~ "High Displacement Risk"),
+         DRI_Cat_16 = case_when(DRI_Cat_16 == "1"~ "Low Displacement Risk",
+                                DRI_Cat_16 %in% c("2", "3")~"Moderate Displacement Risk",
+                                DRI_Cat_16 %in% "4" ~ "High Displacement Risk")) %>% 
+  mutate(DRI_Cat_00 = factor(DRI_Cat_00, levels = c("High Displacement Risk", "Moderate Displacement Risk", "Low Displacement Risk")),
+         DRI_Cat_11 = factor(DRI_Cat_11, levels = c("High Displacement Risk", "Moderate Displacement Risk", "Low Displacement Risk")),
+         DRI_Cat_16 = factor(DRI_Cat_16, levels = c("High Displacement Risk", "Moderate Displacement Risk", "Low Displacement Risk")))
+                             
+
+
+MDRI_1<-ggplot()+
+  geom_sf(data=dataset_map_DRI %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = DRI_00), color = "gray60")+
+  scale_fill_distiller(palette = "RdBu", breaks = c(0, 300, 600, 900, 1200, 1500), labels = c("Lowest","300", "600", "900", "1200", "Highest"), limits =c(0, 1500))+
+  labs(fill = "Displacement Risk Index")+
+  ggtitle(label = "2000")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+MDRI_2<-ggplot()+
+  geom_sf(data=dataset_map_DRI %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = DRI_11), color = "gray60")+
+  geom_sf(data=completed_0711_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linewidth=1.10, fill=NA)+
+   scale_fill_distiller(palette = "RdBu", breaks = c(0, 300, 600, 900, 1200, 1500), labels = c("Lowest","300", "600", "900", "1200", "Highest"), limits =c(0, 1500))+
+  labs(fill = "Displacement Risk Index", color = "Park and Trail \nImprovements")+
+  ggtitle(label = "2007 - 2011")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+MDRI_3<-ggplot()+
+  geom_sf(data=dataset_map_DRI %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = DRI_16), color = "gray60")+
+  geom_sf(data=completed_1216_sf %>% filter(!is.na(Parks_Trails)), aes(color = as.character(Parks_Trails)), linewidth=1.10, fill=NA)+
+    scale_fill_distiller(palette = "RdBu", breaks = c(0, 300, 600, 900, 1200, 1500), labels = c("Lowest","300", "600", "900", "1200", "Highest"), limits =c(0, 1500))+
+  labs(fill = "Displacement Risk Index", color = "Park and Trail \nImprovements")+
+  ggtitle(label = "2012 - 2016")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  theme_minimal()+
+  theme(axis.title = element_blank())
+
+DCAT_1<-ggplot()+
+  geom_sf(data=dataset_map_DRI %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = DRI_Cat_00), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "DRI Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+DCAT_2<-ggplot()+
+  geom_sf(data=dataset_map_DRI %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = DRI_Cat_11), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "DRI Categories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(legend.position = "none", axis.title = element_blank())
+
+DCAT_3<-ggplot()+
+  geom_sf(data=dataset_map_DRI %>% filter(belt_flag == "BeltLine"), aes(geometry = geometry, fill = DRI_Cat_16), color = "gray60")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(fill = "Displacement Risk Index \nCategories")+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+  scalebar(dataset_map %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+  theme_minimal()+
+  theme(axis.title = element_blank())
+
+MDRI_1 + MDRI_2 + MDRI_3 + DCAT_1 + DCAT_2 + DCAT_3 + 
+  plot_layout(ncol = 3, nrow = 2, guides = "collect") & 
+  theme(plot.title = element_text(hjust = 0.5), panel.grid.major = element_line(colour = "transparent"), plot.margin = unit(c(0.5,0.5,0.5,0.5,0.5,0.5), "cm"))
+
+ggsave("F1_Beltline_DRI.tiff", width = 12, height = 8, dpi = 600)
+ggsave("F1_Beltline_DRI.png", width = 12, height = 8, dpi = 600)
+
+```
+
+# Supplemental Figure #12: Maps: Housing Trajectory for the BeltLine ---- 
+
+```{r supp fig 11, echo=FALSE}
+House_Trajectory<-ggplot()+
+  geom_sf(data=dataset_map_Housing %>% filter(belt_flag=="BeltLine"), aes(fill = Housing_Trajectory, color = Housing_Trajectory), show.legend = FALSE)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scalebar(bg_limits_belt %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 0.5, dist_unit = "mi", st.size = 3, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"))
+
+
+Beltline_House_Trajectory_Facet<-ggplot()+
+  geom_sf(data=bg_limits_belt %>% filter(belt_flag =="BeltLine"), color = "gray80", lwd = .15, fill=NA)+
+  geom_sf(data=dataset_map_Housing %>% filter(belt_flag=="BeltLine"), aes(fill = Housing_Trajectory, color = Housing_Trajectory), alpha = .95, show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), lwd = .4, fill = NA, colour = "gray30", alpha = .3)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  ggtitle(label = "Housing Trajectories")+
+  coord_sf(datum=NA)+
+  theme_minimal()+
+  theme(strip.text.x = element_text(size = 18))+
+  facet_wrap(~Housing_Trajectory, labeller = label_wrap_gen(width = 10))
+
+House_Trajectory + Beltline_House_Trajectory_Facet &
+  theme(plot.title = element_text(size = 22, hjust = 0.5), legend.text = element_text(size = 16), legend.title = element_text(size = 18))
+
+# ggsave("F11_Beltline_Trajectory.tiff", width = 15, height = 8, dpi = 150)
+
+
+```
+
+
+# Supplemental Figure: Displacement Risk Index Alluvial Diagrams ----
+
+```{r supp fig, echo=FALSE, include=FALSE}
+dataset_map_DR <- dataset_map_DRI %>% dplyr::select(GEOID, belt_flag, DRI_00, DRI_11, DRI_16, DRI_Cat_00, DRI_Cat_11, DRI_Cat_16)  
+dataset_map_DR <- dataset_map_DR %>% 
+  mutate(DR_Trajectory = case_when(
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Persistently High",
+    DRI_Cat_00 == "Moderate Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Persistently Moderate",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Persistently Low",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Increasing Displacement Risk",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Increasing Displacement Risk",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Increasing Displacement Risk",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Increasing Displacement Risk",
+    DRI_Cat_00 == "Moderate Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Increasing Displacement Risk",
+    DRI_Cat_00 == "Moderate Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Increasing Displacement Risk",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Increasing Displacement Risk",
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Decreasing Displacement Risk",  
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Decreasing Displacement Risk",  
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Decreasing Displacement Risk", 
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Decreasing Displacement Risk", 
+    DRI_Cat_00 == "Moderate Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Decreasing Displacement Risk", 
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Decreasing Displacement Risk", 
+    DRI_Cat_00 == "Moderate Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Decreasing Displacement Risk",
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Fluctuating Displacement Risk",
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "High Displacement Risk" ~ "Fluctuating Displacement Risk",
+    DRI_Cat_00 == "High Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Fluctuating Displacement Risk",
+    DRI_Cat_00 == "Moderate Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Fluctuating Displacement Risk",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Fluctuating Displacement Risk",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "High Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Fluctuating Displacement Risk",
+    DRI_Cat_00 == "Moderate Displacement Risk" & DRI_Cat_11 == "Low Displacement Risk" & DRI_Cat_16 == "Moderate Displacement Risk" ~ "Fluctuating Displacement Risk",
+    DRI_Cat_00 == "Low Displacement Risk" & DRI_Cat_11 == "Moderate Displacement Risk" & DRI_Cat_16 == "Low Displacement Risk" ~ "Fluctuating Displacement Risk",
+  )) %>% 
+  mutate(DR_Trajectory = factor(DR_Trajectory, levels = c("Persistently High", "Persistently Moderate", "Persistently Low", "Increasing Displacement Risk", "Decreasing Displacement Risk", "Fluctuating Displacement Risk")))
+
+# Create a dataset of just the DRI Trajectories
+DR_traj <- dataset_map_DR %>% 
+  dplyr::select(GEOID,DR_Trajectory)
+
+# Create new datasets of tenure by race
+tenure_race0016 <- dataset_0016g%>% 
+  dplyr:: select(GEOID, belt_flag, P_rent_white, P_rent_black, P_rent_aian, P_rent_hispanic, P_rent_asian, P_rent_nhpi, P_own_white, P_own_black,
+                 P_own_aian, P_own_asian, P_own_nhpi, P_own_hispanic, S_Year)
+bg_limits_nospatial <- st_set_geometry(bg_limits, NULL)
+# Noticed that 129 block groups are missing from this new dataset
+tenure_race21 <- left_join(bg_limits_nospatial, dataset_21, by = c("GEOID" = "AREAKEY")) 
+# Decided inputting zero instead of keeping missing data as missing causes me to misinterpret displacement, so I'm going to drop the block groups that missing data for 2017-2021
+# tenure_race21 <- tenure_race21 %>%
+#   mutate(S_Year = ifelse(S_Year == "NaN" | is.na(S_Year), 2021, S_Year),
+#          P_rent_white = ifelse(P_rent_white == "NaN" | is.na(P_rent_white), 0, P_rent_white),
+#          P_rent_black = ifelse(P_rent_black == "NaN" | is.na(P_rent_black), 0, P_rent_black),
+#          P_rent_aian = ifelse(P_rent_aian == "NaN" | is.na(P_rent_aian), 0, P_rent_aian),
+#          P_rent_hispanic = ifelse(P_rent_hispanic == "NaN" | is.na(P_rent_hispanic), 0, P_rent_hispanic),
+#          P_rent_asian = ifelse(P_rent_asian == "NaN" | is.na(P_rent_asian), 0, P_rent_asian),
+#          P_rent_nhpi = ifelse(P_rent_nhpi == "NaN" | is.na(P_rent_nhpi), 0, P_rent_nhpi),
+#          P_own_white = ifelse(P_own_white == "NaN" | is.na(P_own_white), 0, P_own_white),
+#          P_own_black = ifelse(P_own_black == "NaN" | is.na(P_own_black), 0, P_own_black),
+#          P_own_aian = ifelse(P_own_aian == "NaN" | is.na(P_own_aian), 0, P_own_aian),
+#          P_own_hispanic = ifelse(P_own_hispanic == "NaN" | is.na(P_own_hispanic), 0, P_own_hispanic),
+#          P_own_asian = ifelse(P_own_asian == "NaN" | is.na(P_own_asian), 0, P_own_asian),
+#          P_own_nhpi = ifelse(P_own_nhpi == "NaN" | is.na(P_own_nhpi), 0, P_own_nhpi))
+tenure_race21 <- tenure_race21 %>% 
+  drop_na()
+
+# Combine different years of data for tenure by race
+# Only have complete data for 188 rows; subsetted data to only those block groups
+complete_21_GEOID <- tenure_race21 %>% 
+  dplyr::select(GEOID)
+# Combined the data for all of the years of data
+tenure_race_0021 <- bind_rows(tenure_race0016, tenure_race21)
+# Removed rows that I don't have complete data for 2021; Merged correctly only have 752 rows (188*4=752)
+tenure_race <- merge(x=complete_21_GEOID, y=tenure_race_0021, by = "GEOID", all.x = TRUE)
+
+# Create data for tenure by race and DRI trajectories
+complete_traj <- merge(x=complete_21_GEOID, y=DR_traj, by = "GEOID", all.x = TRUE)
+tenure_DR <- merge(tenure_race, complete_traj, by = 'GEOID', all = TRUE)
+
+# Subset data to include number of observations
+DR_traj_dec <- subset(tenure_DR, DR_Trajectory == "Decreasing Displacement Risk")
+DR_traj_inc <- subset(tenure_DR, DR_Trajectory == "Increasing Displacement Risk")
+# 
+# DR00_tenure_WH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2000"), aes(geometry = geometry, fill = P_own_white), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of NH-White Homeowners")+
+#   ggtitle(label = "2000")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "none", axis.title = element_blank())
+# 
+# DR11_tenure_WH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2011"), aes(geometry = geometry, fill = P_own_white), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of NH-White Homeowners")+
+#   ggtitle(label = "2007 - 2011")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "none", axis.title = element_blank())
+# 
+# DR16_tenure_WH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2016"), aes(geometry = geometry, fill = P_own_white), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of NH-White Homeowners")+
+#   ggtitle(label = "2012 - 2016")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "none", axis.title = element_blank())
+# 
+# DR21_tenure_WH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2021"), aes(geometry = geometry, fill = P_own_white), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of NH-White Homeowners")+
+#   ggtitle(label = "2017 - 2021")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "right", axis.title = element_blank())
+# 
+# DR00_tenure_BH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2000"), aes(geometry = geometry, fill = P_own_black), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of Black Homeowners")+
+#   ggtitle(label = "2000")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "none", axis.title = element_blank())
+# 
+# DR11_tenure_BH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2011"), aes(geometry = geometry, fill = P_own_black), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of Black Homeowners")+
+#   ggtitle(label = "2007 - 2011")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "none", axis.title = element_blank())
+# 
+# DR16_tenure_BH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2016"), aes(geometry = geometry, fill = P_own_black), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of Black Homeowners")+
+#   ggtitle(label = "2012 - 2016")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "none", axis.title = element_blank())
+# 
+# DR21_tenure_BH<-ggplot()+
+#   geom_sf(data=bg_limits_belt, color = "gray80", lwd = .15, fill=NA)+
+#   geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), fill = NA, color = "gray20")+
+#   geom_sf(data=bg_limits_ATL, color = "gray40", fill=NA)+
+#   geom_sf(data=DR_traj_dec %>% filter(S_Year == "2021"), aes(geometry = geometry, fill = P_own_black), color = "gray60")+
+#   scale_fill_distiller(palette = "RdBu", breaks = c(0, 0.20, 0.40, 0.60, 0.80, 1.00), labels = c("0","20%", "40%", "60%", "80%", "100%"), limits =c(0, 1.00))+
+#   labs(fill = "Percent of Black Homeowners")+
+#   ggtitle(label = "2017 - 2021")+
+#   coord_sf(default_crs = sf::st_crs(4269))+
+#   # scale_x_continuous(breaks = c(-84.46, -84.42, -84.38, -84.34))+
+#   scalebar(dataset_map, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 2, transform = TRUE)+
+#   theme_minimal()+
+#   theme(legend.position = "right", axis.title = element_blank())
+# 
+# DR00_tenure_WH+DR11_tenure_WH+DR16_tenure_WH+DR21_tenure_WH+DR00_tenure_BH+DR11_tenure_BH+DR16_tenure_BH+DR21_tenure_BH+
+#   plot_layout(ncol = 4, nrow = 2, guides = "collect")
+
+# Didn't find the map visualizations of displacement helpful, so I'm going to try displaying this information as a line graph
+# Preparing the table data for ggplot step
+# freq = table(renter = c(tenure_DR$P_rent_white, tenure_DR$P_rent_black), owner = c(tenure_DR$P_own_white, tenure_DR$P_own_black))
+# dat1 <- as.data.frame(freq)
+# 
+# # include the totals for the rows by  latent class
+# dat1_wide <- tenure_DR %>% 
+#   pivot_wider(names_from = S_Year, values_from = P_own_white, values_fill = 0)
+# dat1_wide$Total <- rowSums(dat1_wide[3:10])
+# dat1_long <- dat1_wide %>%
+#   pivot_longer(c("White","Black or African American","Hispanic/Latinx","Asian, Native Hawaiian, Pacific Islander","Native American","Multiracial", "More than one race/ethnicity",
+#                  "Other")) %>% 
+#   mutate(pct = (value/Total)*100)
+
+DR_traj_inc_wide <- DR_traj_inc %>% 
+  pivot_wider(names_from = S_Year, values_from = c(P_rent_white, P_rent_black, P_rent_aian, P_rent_hispanic, P_rent_asian, P_rent_nhpi, P_own_white, P_own_black, P_own_aian, P_own_hispanic,
+                                                   P_own_asian, P_own_nhpi)) 
+DR_traj_inc_wide <- DR_traj_inc_wide %>% 
+  mutate(mean_rent_white_2000 = mean(P_rent_white_2000),
+         mean_rent_white_2011 = mean(P_rent_white_2011),
+         mean_rent_white_2016 = mean(P_rent_white_2016),
+         mean_rent_white_2021 = mean(P_rent_white_2021),
+         mean_rent_black_2000 = mean(P_rent_black_2000),
+         mean_rent_black_2011 = mean(P_rent_black_2011),
+         mean_rent_black_2016 = mean(P_rent_black_2016),
+         mean_rent_black_2021 = mean(P_rent_black_2021),
+         mean_rent_hispanic_2000 = mean(P_rent_hispanic_2000),
+         mean_rent_hispanic_2011 = mean(P_rent_hispanic_2011),
+         mean_rent_hispanic_2016 = mean(P_rent_hispanic_2016),
+         mean_rent_hispanic_2021 = mean(P_rent_hispanic_2021),
+         mean_rent_asian_2000 = mean(P_rent_asian_2000),
+         mean_rent_asian_2011 = mean(P_rent_asian_2011),
+         mean_rent_asian_2016 = mean(P_rent_asian_2016),
+         mean_rent_asian_2021 = mean(P_rent_asian_2021),
+         mean_rent_aian_2000 = mean(P_rent_aian_2000),
+         mean_rent_aian_2011 = mean(P_rent_aian_2011),
+         mean_rent_aian_2016 = mean(P_rent_aian_2016),
+         mean_rent_aian_2021 = mean(P_rent_aian_2021),
+         mean_rent_nhpi_2000 = mean(P_rent_nhpi_2000),
+         mean_rent_nhpi_2011 = mean(P_rent_nhpi_2011),
+         mean_rent_nhpi_2016 = mean(P_rent_nhpi_2016),
+         mean_rent_nhpi_2021 = mean(P_rent_nhpi_2021),
+         mean_own_white_2000 = mean(P_own_white_2000),
+         mean_own_white_2011 = mean(P_own_white_2011),
+         mean_own_white_2016 = mean(P_own_white_2016),
+         mean_own_white_2021 = mean(P_own_white_2021),
+         mean_own_black_2000 = mean(P_own_black_2000),
+         mean_own_black_2011 = mean(P_own_black_2011),
+         mean_own_black_2016 = mean(P_own_black_2016),
+         mean_own_black_2021 = mean(P_own_black_2021),
+         mean_own_hispanic_2000 = mean(P_own_hispanic_2000),
+         mean_own_hispanic_2011 = mean(P_own_hispanic_2011),
+         mean_own_hispanic_2016 = mean(P_own_hispanic_2016),
+         mean_own_hispanic_2021 = mean(P_own_hispanic_2021),
+         mean_own_asian_2000 = mean(P_own_asian_2000),
+         mean_own_asian_2011 = mean(P_own_asian_2011),
+         mean_own_asian_2016 = mean(P_own_asian_2016),
+         mean_own_asian_2021 = mean(P_own_asian_2021),
+         mean_own_aian_2000 = mean(P_own_aian_2000),
+         mean_own_aian_2011 = mean(P_own_aian_2011),
+         mean_own_aian_2016 = mean(P_own_aian_2016),
+         mean_own_aian_2021 = mean(P_own_aian_2021),
+         mean_own_nhpi_2000 = mean(P_own_nhpi_2000),
+         mean_own_nhpi_2011 = mean(P_own_nhpi_2011),
+         mean_own_nhpi_2016 = mean(P_own_nhpi_2016),
+         mean_own_nhpi_2021 = mean(P_own_nhpi_2021))
+
+DR_traj_inc_long <- DR_traj_inc_wide %>% 
+  pivot_longer(cols = mean_rent_white_2000:mean_own_nhpi_2021, names_to = c("tenure","race","year"), names_prefix = "mean_", names_sep = "_", values_to = "mean")
+DR_traj_inc_long$race <- factor(DR_traj_inc_long$race, levels =c("white", "black", "hispanic","asian","aian","nhpi"))
+
+DR_inc_rent <- DR_traj_inc_long %>%
+  filter(tenure == "rent") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Renters"))+
+  ggtitle("Increasing Displacement Risk")
+
+DR_inc_own <- DR_traj_inc_long %>%
+  filter(tenure == "own") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Homeowners"))+
+  ggtitle("Increasing Displacement Risk")
+
+DR_traj_dec_wide <- DR_traj_dec %>% 
+  pivot_wider(names_from = S_Year, values_from = c(P_rent_white, P_rent_black, P_rent_aian, P_rent_hispanic, P_rent_asian, P_rent_nhpi, P_own_white, P_own_black, P_own_aian, P_own_hispanic,
+                                                   P_own_asian, P_own_nhpi)) 
+DR_traj_dec_wide <- DR_traj_dec_wide %>% 
+  mutate(mean_rent_white_2000 = mean(P_rent_white_2000),
+         mean_rent_white_2011 = mean(P_rent_white_2011),
+         mean_rent_white_2016 = mean(P_rent_white_2016),
+         mean_rent_white_2021 = mean(P_rent_white_2021),
+         mean_rent_black_2000 = mean(P_rent_black_2000),
+         mean_rent_black_2011 = mean(P_rent_black_2011),
+         mean_rent_black_2016 = mean(P_rent_black_2016),
+         mean_rent_black_2021 = mean(P_rent_black_2021),
+         mean_rent_hispanic_2000 = mean(P_rent_hispanic_2000),
+         mean_rent_hispanic_2011 = mean(P_rent_hispanic_2011),
+         mean_rent_hispanic_2016 = mean(P_rent_hispanic_2016),
+         mean_rent_hispanic_2021 = mean(P_rent_hispanic_2021),
+         mean_rent_asian_2000 = mean(P_rent_asian_2000),
+         mean_rent_asian_2011 = mean(P_rent_asian_2011),
+         mean_rent_asian_2016 = mean(P_rent_asian_2016),
+         mean_rent_asian_2021 = mean(P_rent_asian_2021),
+         mean_rent_aian_2000 = mean(P_rent_aian_2000),
+         mean_rent_aian_2011 = mean(P_rent_aian_2011),
+         mean_rent_aian_2016 = mean(P_rent_aian_2016),
+         mean_rent_aian_2021 = mean(P_rent_aian_2021),
+         mean_rent_nhpi_2000 = mean(P_rent_nhpi_2000),
+         mean_rent_nhpi_2011 = mean(P_rent_nhpi_2011),
+         mean_rent_nhpi_2016 = mean(P_rent_nhpi_2016),
+         mean_rent_nhpi_2021 = mean(P_rent_nhpi_2021),
+         mean_own_white_2000 = mean(P_own_white_2000),
+         mean_own_white_2011 = mean(P_own_white_2011),
+         mean_own_white_2016 = mean(P_own_white_2016),
+         mean_own_white_2021 = mean(P_own_white_2021),
+         mean_own_black_2000 = mean(P_own_black_2000),
+         mean_own_black_2011 = mean(P_own_black_2011),
+         mean_own_black_2016 = mean(P_own_black_2016),
+         mean_own_black_2021 = mean(P_own_black_2021),
+         mean_own_hispanic_2000 = mean(P_own_hispanic_2000),
+         mean_own_hispanic_2011 = mean(P_own_hispanic_2011),
+         mean_own_hispanic_2016 = mean(P_own_hispanic_2016),
+         mean_own_hispanic_2021 = mean(P_own_hispanic_2021),
+         mean_own_asian_2000 = mean(P_own_asian_2000),
+         mean_own_asian_2011 = mean(P_own_asian_2011),
+         mean_own_asian_2016 = mean(P_own_asian_2016),
+         mean_own_asian_2021 = mean(P_own_asian_2021),
+         mean_own_aian_2000 = mean(P_own_aian_2000),
+         mean_own_aian_2011 = mean(P_own_aian_2011),
+         mean_own_aian_2016 = mean(P_own_aian_2016),
+         mean_own_aian_2021 = mean(P_own_aian_2021),
+         mean_own_nhpi_2000 = mean(P_own_nhpi_2000),
+         mean_own_nhpi_2011 = mean(P_own_nhpi_2011),
+         mean_own_nhpi_2016 = mean(P_own_nhpi_2016),
+         mean_own_nhpi_2021 = mean(P_own_nhpi_2021))
+
+DR_traj_dec_long <- DR_traj_dec_wide %>% 
+  pivot_longer(cols = mean_rent_white_2000:mean_own_nhpi_2021, names_to = c("tenure","race","year"), names_prefix = "mean_", names_sep = "_", values_to = "mean") 
+DR_traj_dec_long$race <- factor(DR_traj_dec_long$race, levels =c("white", "black", "hispanic","asian","aian","nhpi"))
+
+DR_dec_rent <- DR_traj_dec_long %>%
+  filter(tenure == "rent") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Renters"))+
+  ggtitle("Decreasing Displacement Risk")
+
+
+DR_dec_own <- DR_traj_dec_long %>%
+  filter(tenure == "own") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Homeowners"))+
+  ggtitle("Decreasing Displacement Risk")
+
+DR_dec_own+DR_dec_rent+DR_inc_own+DR_inc_rent
+
+# Beltline
+DR_traj_dec_wide_belt <- DR_traj_dec_wide %>% 
+  filter(belt_flag=="Beltline") %>% 
+  mutate(mean_rent_white_2000 = mean(P_rent_white_2000),
+         mean_rent_white_2011 = mean(P_rent_white_2011),
+         mean_rent_white_2016 = mean(P_rent_white_2016),
+         mean_rent_white_2021 = mean(P_rent_white_2021),
+         mean_rent_black_2000 = mean(P_rent_black_2000),
+         mean_rent_black_2011 = mean(P_rent_black_2011),
+         mean_rent_black_2016 = mean(P_rent_black_2016),
+         mean_rent_black_2021 = mean(P_rent_black_2021),
+         mean_rent_hispanic_2000 = mean(P_rent_hispanic_2000),
+         mean_rent_hispanic_2011 = mean(P_rent_hispanic_2011),
+         mean_rent_hispanic_2016 = mean(P_rent_hispanic_2016),
+         mean_rent_hispanic_2021 = mean(P_rent_hispanic_2021),
+         mean_rent_asian_2000 = mean(P_rent_asian_2000),
+         mean_rent_asian_2011 = mean(P_rent_asian_2011),
+         mean_rent_asian_2016 = mean(P_rent_asian_2016),
+         mean_rent_asian_2021 = mean(P_rent_asian_2021),
+         mean_rent_aian_2000 = mean(P_rent_aian_2000),
+         mean_rent_aian_2011 = mean(P_rent_aian_2011),
+         mean_rent_aian_2016 = mean(P_rent_aian_2016),
+         mean_rent_aian_2021 = mean(P_rent_aian_2021),
+         mean_rent_nhpi_2000 = mean(P_rent_nhpi_2000),
+         mean_rent_nhpi_2011 = mean(P_rent_nhpi_2011),
+         mean_rent_nhpi_2016 = mean(P_rent_nhpi_2016),
+         mean_rent_nhpi_2021 = mean(P_rent_nhpi_2021),
+         mean_own_white_2000 = mean(P_own_white_2000),
+         mean_own_white_2011 = mean(P_own_white_2011),
+         mean_own_white_2016 = mean(P_own_white_2016),
+         mean_own_white_2021 = mean(P_own_white_2021),
+         mean_own_black_2000 = mean(P_own_black_2000),
+         mean_own_black_2011 = mean(P_own_black_2011),
+         mean_own_black_2016 = mean(P_own_black_2016),
+         mean_own_black_2021 = mean(P_own_black_2021),
+         mean_own_hispanic_2000 = mean(P_own_hispanic_2000),
+         mean_own_hispanic_2011 = mean(P_own_hispanic_2011),
+         mean_own_hispanic_2016 = mean(P_own_hispanic_2016),
+         mean_own_hispanic_2021 = mean(P_own_hispanic_2021),
+         mean_own_asian_2000 = mean(P_own_asian_2000),
+         mean_own_asian_2011 = mean(P_own_asian_2011),
+         mean_own_asian_2016 = mean(P_own_asian_2016),
+         mean_own_asian_2021 = mean(P_own_asian_2021),
+         mean_own_aian_2000 = mean(P_own_aian_2000),
+         mean_own_aian_2011 = mean(P_own_aian_2011),
+         mean_own_aian_2016 = mean(P_own_aian_2016),
+         mean_own_aian_2021 = mean(P_own_aian_2021),
+         mean_own_nhpi_2000 = mean(P_own_nhpi_2000),
+         mean_own_nhpi_2011 = mean(P_own_nhpi_2011),
+         mean_own_nhpi_2016 = mean(P_own_nhpi_2016),
+         mean_own_nhpi_2021 = mean(P_own_nhpi_2021))
+
+DR_traj_dec_long_belt <- DR_traj_dec_wide_belt %>% 
+  pivot_longer(cols = mean_rent_white_2000:mean_own_nhpi_2021, names_to = c("tenure","race","year"), names_prefix = "mean_", names_sep = "_", values_to = "mean") 
+DR_traj_dec_long_belt$race <- factor(DR_traj_dec_long_belt$race, levels =c("white", "black", "hispanic","asian","aian","nhpi"))
+
+DR_dec_rent_belt <- DR_traj_dec_long_belt %>%
+  filter(tenure == "rent") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Renters"))+
+  ggtitle("Decreasing Displacement Risk")
+
+DR_dec_own_belt <- DR_traj_dec_long_belt %>%
+  filter(tenure == "own") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Homeowners"))+
+  ggtitle("Decreasing Displacement Risk")
+
+DR_traj_inc_wide_belt <- DR_traj_inc_wide %>% 
+  filter(belt_flag=="Beltline") %>% 
+  mutate(mean_rent_white_2000 = mean(P_rent_white_2000),
+         mean_rent_white_2011 = mean(P_rent_white_2011),
+         mean_rent_white_2016 = mean(P_rent_white_2016),
+         mean_rent_white_2021 = mean(P_rent_white_2021),
+         mean_rent_black_2000 = mean(P_rent_black_2000),
+         mean_rent_black_2011 = mean(P_rent_black_2011),
+         mean_rent_black_2016 = mean(P_rent_black_2016),
+         mean_rent_black_2021 = mean(P_rent_black_2021),
+         mean_rent_hispanic_2000 = mean(P_rent_hispanic_2000),
+         mean_rent_hispanic_2011 = mean(P_rent_hispanic_2011),
+         mean_rent_hispanic_2016 = mean(P_rent_hispanic_2016),
+         mean_rent_hispanic_2021 = mean(P_rent_hispanic_2021),
+         mean_rent_asian_2000 = mean(P_rent_asian_2000),
+         mean_rent_asian_2011 = mean(P_rent_asian_2011),
+         mean_rent_asian_2016 = mean(P_rent_asian_2016),
+         mean_rent_asian_2021 = mean(P_rent_asian_2021),
+         mean_rent_aian_2000 = mean(P_rent_aian_2000),
+         mean_rent_aian_2011 = mean(P_rent_aian_2011),
+         mean_rent_aian_2016 = mean(P_rent_aian_2016),
+         mean_rent_aian_2021 = mean(P_rent_aian_2021),
+         mean_rent_nhpi_2000 = mean(P_rent_nhpi_2000),
+         mean_rent_nhpi_2011 = mean(P_rent_nhpi_2011),
+         mean_rent_nhpi_2016 = mean(P_rent_nhpi_2016),
+         mean_rent_nhpi_2021 = mean(P_rent_nhpi_2021),
+         mean_own_white_2000 = mean(P_own_white_2000),
+         mean_own_white_2011 = mean(P_own_white_2011),
+         mean_own_white_2016 = mean(P_own_white_2016),
+         mean_own_white_2021 = mean(P_own_white_2021),
+         mean_own_black_2000 = mean(P_own_black_2000),
+         mean_own_black_2011 = mean(P_own_black_2011),
+         mean_own_black_2016 = mean(P_own_black_2016),
+         mean_own_black_2021 = mean(P_own_black_2021),
+         mean_own_hispanic_2000 = mean(P_own_hispanic_2000),
+         mean_own_hispanic_2011 = mean(P_own_hispanic_2011),
+         mean_own_hispanic_2016 = mean(P_own_hispanic_2016),
+         mean_own_hispanic_2021 = mean(P_own_hispanic_2021),
+         mean_own_asian_2000 = mean(P_own_asian_2000),
+         mean_own_asian_2011 = mean(P_own_asian_2011),
+         mean_own_asian_2016 = mean(P_own_asian_2016),
+         mean_own_asian_2021 = mean(P_own_asian_2021),
+         mean_own_aian_2000 = mean(P_own_aian_2000),
+         mean_own_aian_2011 = mean(P_own_aian_2011),
+         mean_own_aian_2016 = mean(P_own_aian_2016),
+         mean_own_aian_2021 = mean(P_own_aian_2021),
+         mean_own_nhpi_2000 = mean(P_own_nhpi_2000),
+         mean_own_nhpi_2011 = mean(P_own_nhpi_2011),
+         mean_own_nhpi_2016 = mean(P_own_nhpi_2016),
+         mean_own_nhpi_2021 = mean(P_own_nhpi_2021))
+
+DR_traj_inc_long_belt <- DR_traj_inc_wide_belt %>% 
+  pivot_longer(cols = mean_rent_white_2000:mean_own_nhpi_2021, names_to = c("tenure","race","year"), names_prefix = "mean_", names_sep = "_", values_to = "mean")
+DR_traj_inc_long_belt$race <- factor(DR_traj_inc_long_belt$race, levels =c("white", "black", "hispanic","asian","aian","nhpi"))
+
+DR_inc_rent_belt <- DR_traj_inc_long_belt %>%
+  filter(tenure == "rent") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Renters"))+
+  ggtitle("Increasing Displacement Risk")
+
+DR_inc_own_belt <- DR_traj_inc_long_belt %>%
+  filter(tenure == "own") %>% 
+  ggplot(aes(x=year, y=mean, color = race))+
+  geom_point(aes(color = race), size = 3)+
+  # geom_smooth(aes(group = race), method = lm, se=FALSE, fullrange=TRUE)+
+  geom_line(aes(group = race), linewidth = 1.5, linetype = "solid")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent_format(scale = 100), expand = c(0,0))+
+  scale_x_discrete(labels=c("2000" = "2000", 
+                            "2011" = "2007-2011",
+                            "2016" = "2012-2016",
+                            "2021" = "2017-2021"))+
+  scale_color_manual(labels = c("NH-White", "African-American/Black","Hispanic/Latinx","Asian", "American Indian and \nAlaskan Native", "Native Hawaiian and \nOther Pacific Islander"),
+                     values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c", "#fb9a99", "#e31a1c", "#fdbf6f", "#ff7f00","#cab2d6"))+
+  theme(axis.text = element_text(size = 14, color = "black"), axis.title.y = element_blank(), panel.grid.major = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, color = "black"), axis.title.x = element_text(size = 14), legend.position = "right", plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 14), legend.title = element_text(size = 16), legend.key = element_blank())+
+  labs(x = "Year")+
+  guides(color = guide_legend(title = "Race/Ethnicity of Homeowners"))+
+  ggtitle("Increasing Displacement Risk")
+
+DR_dec_own_belt+DR_dec_rent_belt+DR_inc_own_belt+DR_inc_rent_belt
+
+# ggsave("F2_DR_Trajectory.tiff", width = 20, height = 8, dpi = 150)
+# ggsave("F2_DR_Trajectory.png", width = 20, height = 8, dpi = 150)
+
+```
+
+# Supplemental Figure #10: Maps: Displacement Risk Trajectory for the City of Atlanta ---- 
+
+```{r supp fig 10, echo=FALSE}
+ATL_DR_Trajectory<-ggplot()+
+  geom_sf(data=dataset_map_DR, aes(fill = DR_Trajectory, color = DR_Trajectory), show.legend = FALSE)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  labs(fill = "Displacement Risk Trajectories")+
+  scalebar(bg_limits_belt, location = "bottomleft", dist = 1, dist_unit = "mi", st.size = 4, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"))
+
+ATL_DR_Trajectory_Facet<-ggplot()+
+  geom_sf(data=bg_limits_belt, color = "gray80", lwd=.15, fill=NA)+
+  geom_sf(data=dataset_map_DR, aes(fill = DR_Trajectory, color = DR_Trajectory), alpha = .95, show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), lwd = .4, fill = "gray60", colour = "gray30", alpha = .3)+
+  geom_sf(data=bg_limits_belt %>% st_union(), color = "gray40", fill=NA)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  ggtitle(label = "Displacement Risk Trajectories")+
+  coord_sf(datum=NA)+
+  theme_minimal()+
+  theme(strip.text.x = element_text(size = 18))+
+  facet_wrap(~DR_Trajectory, labeller = label_wrap_gen(width = 10))
+
+ATL_DR_Trajectory + ATL_DR_Trajectory_Facet &
+  theme(plot.title = element_text(size = 22, hjust = 0.5))
+
+ggsave("F10_Map_ATL_DR_Trajectory.tiff", width = 15, height = 8, dpi = 150)
+ggsave("F10_Map_ATL_DR_Trajectory.png", width = 15, height = 8, dpi = 150)
+
+```
+
+
+# Supplemental Figure #13: Maps: Displacement Risk Trajectory for the BeltLine ---- 
+
+```{r supp fig 13, echo=FALSE}
+DR_Trajectory<-ggplot()+
+  geom_sf(data=dataset_map_DR %>% filter(belt_flag=="BeltLine"), aes(fill = DR_Trajectory, color = DR_Trajectory), show.legend = FALSE)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scalebar(bg_limits_belt %>% filter(belt_flag=="BeltLine"), location = "bottomleft", dist = 0.5, dist_unit = "mi", st.size = 3, transform = TRUE)+
+  coord_sf(default_crs = sf::st_crs(4269))+
+  theme_minimal()+
+  theme(axis.title = element_blank(), panel.grid.major = element_line(colour = "transparent"))
+
+
+Beltline_DR_Trajectory_Facet<-ggplot()+
+  geom_sf(data=bg_limits_belt %>% filter(belt_flag =="BeltLine"), color = "gray80", lwd = .15, fill=NA)+
+  geom_sf(data=dataset_map_DR %>% filter(belt_flag=="BeltLine"), aes(fill = DR_Trajectory, color = DR_Trajectory), alpha = .95, show.legend = FALSE)+
+  geom_sf(data=bg_limits_belt %>% group_by(belt_flag) %>% summarise(n()) %>% filter(belt_flag == "BeltLine"), lwd = .4, fill = NA, colour = "gray30", alpha = .3)+
+  scale_color_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  scale_fill_manual(values = c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99","#e31a1c"))+
+  ggtitle(label = "Displacement Risk Trajectories")+
+  coord_sf(datum=NA)+
+  theme_minimal()+
+  theme(strip.text.x = element_text(size = 18))+
+  facet_wrap(~DR_Trajectory, labeller = label_wrap_gen(width = 10))
+
+DR_Trajectory + Beltline_DR_Trajectory_Facet &
+  theme(plot.title = element_text(size = 22, hjust = 0.5), legend.text = element_text(size = 16), legend.title = element_text(size = 18))
+
+ggsave("F13_Beltline_DR_Trajectory.tiff", width = 15, height = 8, dpi = 150)
+ggsave("F13_Beltline_DR_Trajectory.png", width = 15, height = 8, dpi = 150)
+

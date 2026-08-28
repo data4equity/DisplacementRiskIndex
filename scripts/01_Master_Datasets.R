@@ -1,17 +1,26 @@
+# Displacement Risk Index (DRI) — master dataset construction
+# Atlanta block groups, three periods: 2000, 2007-2011, 2012-2016.
+# This script reproduces the published/manuscript analysis: indicators are
+# z-scored, rescaled 0-100, and quartiled WITHIN each period separately.
+# For the pooled-standardization version (indices comparable across periods),
+# see scripts/11_Pooled_DRI.R.
+# Run from the project root; expects data_raw/ and outputs/ directories.
+
 # Load and Prepare Data ----
 
 source("scripts/02_GEOS.R")
 source("scripts/03_2000_data.R")
 source("scripts/04_07_11_data.R")
 source("scripts/05_12_16_data.R")
-source("scripts/06_Subs_Hsg.R")
+source("scripts/08_Subs_Hsg.R")
 source("scripts/07_Schools.R")
+source("scripts/09_Greenspace.R")
 source("scripts/02_GEOS.R")
 
 library(pacman)
+library(summarytools)
 p_load(tidyverse, tigris,sf, scales,ltm)
-#census_api_key("6ed16ee8bb787c547084eaa835a2ccfba8abe586")
-#sf::sf_use_s2(FALSE)
+sf::sf_use_s2(FALSE)
 
 # Filter Down to Atlanta Block Groups
 VI_2000<-left_join(bg_limits, VI_2000, by=c("GEOID" = "AREAKEY"))%>% st_set_geometry(NULL)
@@ -79,6 +88,7 @@ dataset_11g <- dataset_11
 dataset_16g <- dataset_16 
 
 dataset_0016g<-bind_rows(dataset_00g, dataset_11g, dataset_16g)
+dataset_0016gr <- dataset_0016g[!dataset_0016g$GEOID == "131219800001",]
 
 
 
@@ -102,9 +112,9 @@ dataset_16<-dataset_16 %>% mutate_at(vars(P_Black:R_File, -S_Year, -geometry), s
 # Rescale 0-100
 
 dataset_00<-dataset_00 %>% 
-  mutate_at(vars(P_Black:P_Elderly, P_LEP, P_HSorLess, P_Renter, P_Poverty, P_Vacant, P_Single, P_RentCostBurden, P_Own_Cost_Burden, P_Severe_RentCostBurden, P_Severe_OwnCostBurden, LIC, Eligible_F, Eligible_R, R_Crime, R_Evict, R_File, P_Expire), rescale, to = c(0, 100)) %>% 
+  mutate_at(vars(P_Black:P_Elderly, P_LEP, P_HSorLess, P_Renter, P_Poverty, P_Vacant, P_Single, P_RentCostBurden, P_Own_Cost_Burden, P_Severe_RentCostBurden, P_Severe_OwnCostBurden, LIC, Eligible_F, Eligible_R, Eligible_FR,R_Crime, R_Evict, R_File, P_Expire), rescale, to = c(0, 100)) %>% 
   mutate_at(vars(MHV, MGR, MHHI, CHU), rescale, to = c(100, 0)) %>%
-  mutate(Index_Vuln = P_Black+ P_Hispanic+ P_AIAN+ P_ASIAN+ P_NHPI+ P_Elderly+ P_Single+ P_LEP+ P_Renter+ P_RentCostBurden+ P_Own_Cost_Burden+ P_Severe_RentCostBurden+ P_Severe_OwnCostBurden+ P_Poverty+ MHHI,
+  mutate(Index_Vuln = P_Black+ P_Hispanic+ P_AIAN+ P_ASIAN+ P_NHPI+ P_Elderly+ P_Single+ P_LEP+ P_Renter+ P_RentCostBurden+ P_Own_Cost_Burden+ P_Severe_RentCostBurden+ P_Severe_OwnCostBurden+ P_Poverty,
          Index_Housing = P_Expire+ CHU+ MHV+ MGR+ R_Crime+ R_Evict+ R_File+ Eligible_FR+ P_Vacant+ LIC+MHHI,
          Index_DR = Index_Vuln + Index_Housing) %>% 
   mutate(Index_Q_Vuln = ntile(Index_Vuln, 4) %>% as.character(),
@@ -124,7 +134,7 @@ dataset_00<-dataset_00 %>%
          DR_Cat = factor(DR_Cat, levels = c("High Displacement Risk", "Moderate Displacement Risk","Low Displacement Risk")))
 
 dataset_11<-dataset_11 %>% 
-  mutate_at(vars(P_Black:P_Elderly, P_LEP, P_HSorLess, P_Renter, P_Poverty, P_Vacant, P_Single, P_RentCostBurden, P_Own_Cost_Burden, P_Severe_RentCostBurden, P_Severe_OwnCostBurden, LIC, Eligible_F, Eligible_R, R_Crime, R_Evict, R_File, P_Expire), rescale, to = c(0, 100)) %>% 
+  mutate_at(vars(P_Black:P_Elderly, P_LEP, P_HSorLess, P_Renter, P_Poverty, P_Vacant, P_Single, P_RentCostBurden, P_Own_Cost_Burden, P_Severe_RentCostBurden, P_Severe_OwnCostBurden, LIC, Eligible_F, Eligible_R, Eligible_FR, R_Crime, R_Evict, R_File, P_Expire), rescale, to = c(0, 100)) %>% 
   mutate_at(vars(MHV, MGR, MHHI, CHU), rescale, to = c(100, 0)) %>%
   mutate(Index_Vuln = P_Black+ P_Hispanic+ P_AIAN+ P_ASIAN+ P_NHPI+ P_Elderly+ P_Single+ P_LEP+ P_Renter+ P_RentCostBurden+ P_Own_Cost_Burden+ P_Severe_RentCostBurden+ P_Severe_OwnCostBurden+ P_Poverty+ MHHI,
          Index_Housing = P_Expire+ CHU+ MHV+ MGR+ R_Crime+ R_Evict+ R_File+ Eligible_FR+ P_Vacant+ LIC+MHHI,
@@ -147,7 +157,7 @@ dataset_11<-dataset_11 %>%
 
 
 dataset_16<-dataset_16 %>% 
-  mutate_at(vars(P_Black:P_Elderly, P_LEP, P_HSorLess, P_Renter, P_Poverty, P_Vacant, P_Single, P_RentCostBurden, P_Own_Cost_Burden, P_Severe_RentCostBurden, P_Severe_OwnCostBurden, LIC, Eligible_F, Eligible_R, R_Crime, R_Evict, R_File, P_Expire), rescale, to = c(0, 100)) %>% 
+  mutate_at(vars(P_Black:P_Elderly, P_LEP, P_HSorLess, P_Renter, P_Poverty, P_Vacant, P_Single, P_RentCostBurden, P_Own_Cost_Burden, P_Severe_RentCostBurden, P_Severe_OwnCostBurden, LIC, Eligible_F, Eligible_R, Eligible_FR, R_Crime, R_Evict, R_File, P_Expire), rescale, to = c(0, 100)) %>% 
   mutate_at(vars(MHV, MGR, MHHI, CHU), rescale, to = c(100, 0)) %>%
   mutate(Index_Vuln = P_Black+ P_Hispanic+ P_AIAN+ P_ASIAN+ P_NHPI+ P_Elderly+ P_Single+ P_LEP+ P_Renter+ P_RentCostBurden+ P_Own_Cost_Burden+ P_Severe_RentCostBurden+ P_Severe_OwnCostBurden+ P_Poverty+ MHHI,
          Index_Housing = P_Expire+ CHU+ MHV+ MGR+ R_Crime+ R_Evict+ R_File+ Eligible_FR+ P_Vacant+ LIC+MHHI,
@@ -205,7 +215,37 @@ summary(dataset_00$Index_DR)
 summary(dataset_11$Index_DR)
 summary(dataset_16$Index_DR)
 
+# Combining different year datasets into one
+dataset <- bind_rows(dataset_00, dataset_11, dataset_16)
+# removing block group that is not included in the analysis
+dataset_rev <- dataset[!dataset$GEOID == "131219800001",]
+
+# Descriptives for the entire DRI
+descr(dataset_rev$Index_DR)
+descr(dataset_rev$Index_Vuln)
+descr(dataset_rev$Index_Housing)
+
+alpha_dri <- data.frame(dataset_rev$P_Black, dataset_rev$P_Hispanic, dataset_rev$P_AIAN, dataset_rev$P_ASIAN, dataset_rev$P_NHPI, dataset_rev$P_Elderly, dataset_rev$P_Single, dataset_rev$P_LEP, dataset_rev$P_HSorLess, dataset_rev$P_Renter, dataset_rev$P_RentCostBurden, dataset_rev$P_Own_Cost_Burden, dataset_rev$P_Severe_RentCostBurden, dataset_rev$P_Severe_OwnCostBurden, dataset_rev$P_Poverty, dataset_rev$MHHI,
+                        dataset_rev$CHU,dataset_rev$P_Expire, dataset_rev$MHV, dataset_rev$MGR, dataset_rev$R_Crime, dataset_rev$R_Evict, dataset_rev$R_File, dataset_rev$Eligible_FR, dataset_rev$P_Vacant, dataset_rev$LIC)
+cronbach.alpha(alpha_dri)
+
 # Save Out Datasets
+DRI_dataset <- dataset %>% 
+  dplyr::select(GEOID, belt_flag, S_Year, Index_Vuln, Index_Housing, Index_DR, Index_Q_Vuln, Index_Q_Housing, Index_Q_DR, Vuln_Cat, House_Cat, DR_Cat)
+DRI_dataset <- DRI_dataset %>% 
+  mutate(Vuln_Composite = as.numeric(as.character(Index_Vuln)),
+         Housing_Composite = as.numeric(as.character(Index_Housing)),
+         DRI_Composite = as.numeric(as.character(Index_DR))) %>% 
+  dplyr::select(GEOID, belt_flag, S_Year, Vuln_Composite, Housing_Composite, DRI_Composite, Index_Q_Vuln, Index_Q_Housing, Index_Q_DR, Vuln_Cat, House_Cat, DR_Cat)
+
+
+write_csv(DRI_dataset, "outputs/DRI_dataset.csv")
+
+# dataset with percent for original indicators
+DRI_dataset_org <- dataset_0016gr[,-c(22:45, 47)]
+DRI_data_org <- left_join(DRI_dataset_org, DRI_dataset, by = c("GEOID", "belt_flag", "S_Year"))
+write_csv(DRI_data_org, "outputs/DRI_origpcts.csv")
+
 
 # write_csv(dataset_00 %>% select(-geometry), "outputs/dataset_00.csv")
 # write_csv(dataset_11%>% select(-geometry), "outputs/dataset_11.csv")
