@@ -37,8 +37,7 @@ beltline<-st_make_valid(st_read("data_raw/Beltline/subareas_shapefiles/beltline_
 
 bg_limits_belt <- bg_limits[!bg_limits$GEOID == "131219800001",] %>%
   mutate(belt_flag = case_when(belt_flag== "Beltline" ~ "BeltLine",
-                               belt_flag== "Not Beltline" ~ "Not BeltLine"),
-         belt_flag = ifelse(GEOID=="131210036001", "Not BeltLine", belt_flag)) %>% 
+                               belt_flag== "Not Beltline" ~ "Not BeltLine")) %>%
   dplyr::select(GEOID, belt_flag, geometry)
 
 # bg_limits_update <- bg_limits_avg %>%
