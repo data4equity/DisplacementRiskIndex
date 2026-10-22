@@ -11,6 +11,13 @@
 # only in Index_Housing for 2000; here it belongs only to Index_Housing, as in
 # manuscript Table 1. P_HSorLess was rescaled but omitted from Index_Vuln; here
 # it is included, also matching Table 1.
+#
+# As of 2026-10-21, median gross rent (MGR) is scaled forward (higher rent ->
+# higher risk) because rising rents directly increase displacement pressure on
+# current residents. The earlier rationale that low-cost housing attracts
+# speculative purchasing was dropped on 2026-10-21. MHV, MHHI and CHU remain
+# reversed. scripts/01_Master_Datasets.R still reverses MGR to reproduce the
+# published per-period method used as the comparison baseline.
 
 suppressPackageStartupMessages({
   library(dplyr)
@@ -41,7 +48,7 @@ hous_vars <- c(
   "P_Expire", "CHU", "MHV", "MGR", "R_Crime", "R_Evict", "R_File",
   "Eligible_FR", "P_Vacant", "LIC", "MHHI"
 )
-rev_vars <- c("MHV", "MGR", "MHHI", "CHU")
+rev_vars <- c("MHV", "MHHI", "CHU")
 all_vars <- c(vuln_vars, hous_vars)
 
 dri <- read.csv(input_file, check.names = FALSE)
@@ -73,6 +80,15 @@ for (indicator in setdiff(all_vars, rev_vars)) {
 for (indicator in rev_vars) {
   pooled[[indicator]] <- rescale(pooled[[indicator]], to = c(100, 0))
 }
+
+# Guard scaling direction: forward indicators put the highest raw value at 100, reversed ones at 0.
+stopifnot(
+  "MGR must be forward-scaled" = isTRUE(all.equal(pooled$MGR[which.max(dri$MGR)], 100)) &&
+    isTRUE(all.equal(pooled$MGR[which.min(dri$MGR)], 0)),
+  "Reverse indicators must put the highest raw value at 0" = all(vapply(rev_vars, function(v) {
+    isTRUE(all.equal(pooled[[v]][which.max(dri[[v]])], 0))
+  }, logical(1)))
+)
 
 pooled <- pooled %>%
   mutate(
