@@ -106,6 +106,7 @@ dataset_16<-dataset_16 %>% mutate_at(vars(P_Black:R_File, -S_Year, -geometry), s
 # Poverty +
 # MHV -
 # MGR -
+#   (Published per-period method, kept here as the comparison baseline. The pooled index in scripts/11_Pooled_DRI.R scales MGR forward as of 2026-10-21.)
 # P_Vacant +
 # MHHI -
 
